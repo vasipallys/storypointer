@@ -1,8 +1,9 @@
 import { applyNodeChanges, Background, Controls, Handle, MarkerType, Position, ReactFlow } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { ChevronRight, Plus, RefreshCw } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
+import EstimateDialog from './EstimateDialog'
 import InspectorPanel from './InspectorPanel'
 
 const KIND_LABEL = { L1: 'system', L2: 'container', L3: 'component', L4: 'code' }
@@ -33,6 +34,8 @@ export default function C4Canvas({ projectId, config }) {
   const [draft, setDraft] = useState({ name: '', description: '', tech: '' })
   const [error, setError] = useState(null)
   const [nodes, setNodes] = useState([])
+  const [estimating, setEstimating] = useState(null)
+  const resultsCache = useRef(new Map())
 
   const refresh = useCallback(() => api.c4Graph(projectId).then(setGraph).catch(setError), [projectId])
   useEffect(() => { refresh() }, [refresh])
@@ -147,8 +150,15 @@ export default function C4Canvas({ projectId, config }) {
         </div>}
       </div>
       <InspectorPanel projectId={projectId} element={selected} config={config}
+        hasCachedResult={selected ? resultsCache.current.has(selected.id) : false}
+        onEstimate={(element, autoStart) => setEstimating({ element, autoStart })}
         onChanged={refresh} onDeleted={() => { setSelectedId(null); refresh() }} />
     </div>
+    {estimating && <EstimateDialog projectId={projectId} element={estimating.element}
+      autoStart={estimating.autoStart}
+      cachedResult={estimating.autoStart ? null : resultsCache.current.get(estimating.element.id)}
+      onResult={(result) => resultsCache.current.set(estimating.element.id, result)}
+      onChanged={refresh} onClose={() => setEstimating(null)} />}
     {adding && <div className="m3-dialog-scrim" onClick={() => setAdding(false)}>
       <div className="m3-dialog" onClick={(event) => event.stopPropagation()} role="dialog" aria-label={`Add ${addLevel} element`}>
         <h2>Add {KIND_LABEL[addLevel]} ({addLevel})</h2>

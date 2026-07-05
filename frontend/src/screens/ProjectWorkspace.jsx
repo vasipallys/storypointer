@@ -85,10 +85,10 @@ export default function ProjectWorkspace({ projectId, config, notice }) {
   const refresh = useCallback(() => api.getProject(projectId).then(setProject).catch(setError), [projectId])
   useEffect(() => { refresh() }, [refresh])
 
-  if (error) return <div className="m3-banner error">{String(error.message || error)}</div>
-  if (!project) return <p>Loading project…</p>
+  if (error) return <div className="m3-content"><div className="m3-banner error">{String(error.message || error)}</div></div>
+  if (!project) return <p className="m3-content">Loading project…</p>
 
-  return <div className="m3-body" style={{ margin: '-24px -28px -80px' }}>
+  return <div className="m3-body">
     <nav className="m3-rail" aria-label="Project sections">
       {TABS.map(({ id, label, icon: Icon }) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>
         <span className="m3-rail-icon"><Icon size={20} /></span>{label}</button>)}

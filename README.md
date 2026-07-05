@@ -50,10 +50,11 @@ uvicorn backend.api.main:app --reload --port 8000
 npm run dev
 ```
 
-Open `http://localhost:5173`. Seed a demo project with a small C4 model:
+Open `http://localhost:5173`. Seed sample projects:
 
 ```powershell
-python scripts\seed_demo.py
+python scripts\seed_demo.py      # small: 1 system, 3 containers, 4 stories
+python scripts\seed_banking.py   # detailed retail-banking structure: 33 elements across L1-L4
 ```
 
 Useful checks:

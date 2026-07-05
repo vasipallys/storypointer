@@ -34,20 +34,24 @@ export default function App() {
         {jiraStatuses.map(([name, value]) => <span key={name} className={`m3-chip ${value.status === 'ok' ? 'ok' : 'bad'}`}>{name}</span>)}
       </div>
     </header>
-    <div className="m3-content" style={{ flex: 1 }}>
-      {configurationError && <div className="m3-banner error">{configurationError}</div>}
-      {route.name === 'home' && <ProjectsHome
-        onOpen={(id) => setRoute({ name: 'project', id })}
-        onNew={() => setRoute({ name: 'wizard' })}
-        onQuick={() => setRoute({ name: 'quick' })} />}
-      {route.name === 'wizard' && <NewProjectWizard config={config}
-        onDone={(id, notice) => setRoute({ name: 'project', id, notice })}
-        onCancel={() => setRoute({ name: 'home' })} />}
-      {route.name === 'project' && <ProjectWorkspace key={route.id} projectId={route.id} config={config} notice={route.notice} />}
-      {route.name === 'quick' && <>
-        <div className="m3-page-title"><h1>Quick estimate</h1><p>One-off estimation without a project — form, Jira browse, or spreadsheet.</p></div>
-        <QuickEstimate config={config} />
-      </>}
-    </div>
+    {route.name === 'project'
+      ? <>
+        {configurationError && <div className="m3-content" style={{ padding: '16px 28px 0' }}><div className="m3-banner error">{configurationError}</div></div>}
+        <ProjectWorkspace key={route.id} projectId={route.id} config={config} notice={route.notice} />
+      </>
+      : <div className="m3-content" style={{ flex: 1 }}>
+        {configurationError && <div className="m3-banner error">{configurationError}</div>}
+        {route.name === 'home' && <ProjectsHome
+          onOpen={(id) => setRoute({ name: 'project', id })}
+          onNew={() => setRoute({ name: 'wizard' })}
+          onQuick={() => setRoute({ name: 'quick' })} />}
+        {route.name === 'wizard' && <NewProjectWizard config={config}
+          onDone={(id, notice) => setRoute({ name: 'project', id, notice })}
+          onCancel={() => setRoute({ name: 'home' })} />}
+        {route.name === 'quick' && <>
+          <div className="m3-page-title"><h1>Quick estimate</h1><p>One-off estimation without a project — form, Jira browse, or spreadsheet.</p></div>
+          <QuickEstimate config={config} />
+        </>}
+      </div>}
   </div>
 }
