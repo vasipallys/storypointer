@@ -42,9 +42,13 @@ build/Release
 node_modules/
 jspm_packages/
 .venv/
+venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# Story Pointer local data (SQLite projects + checkpoints)
+data/
 
 # Snowpack dependency directory (https://snowpack.dev/)
 web_modules/

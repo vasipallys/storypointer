@@ -73,4 +73,33 @@ export const api = {
       body: JSON.stringify({ points, confirm: true }),
     }),
   templateUrl: `${API_BASE}/upload/template`,
+
+  listProjects: () => jsonRequest('/projects'),
+  createProject: (payload) => json('/projects', 'POST', payload),
+  getProject: (id) => jsonRequest(`/projects/${id}`),
+  deleteProject: (id) => jsonRequest(`/projects/${id}`, { method: 'DELETE' }),
+  addRepo: (id, payload) => json(`/projects/${id}/repos`, 'POST', payload),
+  addJiraLink: (id, payload) => json(`/projects/${id}/jira`, 'POST', payload),
+
+  c4Graph: (id) => jsonRequest(`/projects/${id}/c4/graph`),
+  createElement: (id, payload) => json(`/projects/${id}/c4/elements`, 'POST', payload),
+  updateElement: (id, elementId, payload) => json(`/projects/${id}/c4/elements/${elementId}`, 'PATCH', payload),
+  deleteElement: (id, elementId) => jsonRequest(`/projects/${id}/c4/elements/${elementId}`, { method: 'DELETE' }),
+  createRelation: (id, payload) => json(`/projects/${id}/c4/relations`, 'POST', payload),
+  deleteRelation: (id, relationId) => jsonRequest(`/projects/${id}/c4/relations/${relationId}`, { method: 'DELETE' }),
+  tagElement: (id, elementId, payload) => json(`/projects/${id}/c4/elements/${elementId}/tag`, 'POST', payload),
+  importRepoScan: (id, payload) => json(`/projects/${id}/c4/import/repo-scan`, 'POST', payload),
+  importJira: (id, payload = {}) => json(`/projects/${id}/c4/import/jira`, 'POST', payload),
+  rollup: (id) => jsonRequest(`/projects/${id}/rollup`),
+  createArtifact: (id, elementId, payload) => json(`/projects/${id}/elements/${elementId}/artifact`, 'POST', payload),
+  estimateElement: (id, elementId, payload, onEvent, signal) =>
+    consumeSSE(`/projects/${id}/elements/${elementId}/estimate`, payload, onEvent, signal),
+}
+
+function json(path, method, payload) {
+  return jsonRequest(path, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
 }

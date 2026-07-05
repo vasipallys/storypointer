@@ -1,0 +1,108 @@
+import { DownloadCloud, FolderGit2, LayoutDashboard, Network, ScanSearch, Sigma, Zap } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { api } from '../api/client'
+import C4Canvas from '../c4/C4Canvas'
+import RollupDashboard from '../c4/RollupDashboard'
+import QuickEstimate from './QuickEstimate'
+
+const TABS = [
+  { id: 'canvas', label: 'C4 canvas', icon: Network },
+  { id: 'rollup', label: 'Roll-up', icon: Sigma },
+  { id: 'quick', label: 'Quick', icon: Zap },
+  { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+]
+
+function Overview({ project, config, onChanged }) {
+  const [scanPath, setScanPath] = useState(project.repos.find((repo) => repo.local_path)?.local_path || '')
+  const [jiraForm, setJiraForm] = useState({ instance_name: '', project_key: '' })
+  const [repoForm, setRepoForm] = useState({ url: '', local_path: '' })
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState(null)
+  const [error, setError] = useState(null)
+
+  const act = async (action, message) => {
+    setBusy(true); setError(null); setNotice(null)
+    try { const outcome = await action(); setNotice(message(outcome)); onChanged() }
+    catch (err) { setError(err) } finally { setBusy(false) }
+  }
+
+  return <div style={{ maxWidth: 760 }}>
+    {notice && <div className="m3-banner info">{notice}</div>}
+    {error && <div className="m3-banner error">{String(error.message || error)}</div>}
+    <div className="m3-card" style={{ marginBottom: 16 }}>
+      <h3>{project.name}</h3>
+      <div className="m3-meta">{project.description || 'No description'}</div>
+      <div className="m3-card-chips">
+        {project.repos.map((repo) => <span key={repo.id} className="m3-chip"><FolderGit2 size={13} /> {repo.url || repo.local_path}{repo.mode === 'new' ? ' (planned)' : ''}</span>)}
+        {project.jira.map((link) => <span key={link.id} className="m3-chip filled">{link.instance_name} · {link.project_key}</span>)}
+      </div>
+    </div>
+
+    <div className="m3-card" style={{ marginBottom: 16 }}>
+      <h3>Seed / grow the C4 model</h3>
+      <p className="m3-meta">Both importers create elements with a “proposed” status so nothing enters the roll-up until you accept it.</p>
+      <label className="m3-field"><span>Local repo path to scan</span>
+        <input value={scanPath} onChange={(event) => setScanPath(event.target.value)} placeholder="D:\\work\\my-repo" /></label>
+      <div className="m3-inspector-actions">
+        <button className="m3-btn tonal" disabled={busy || !scanPath.trim()}
+          onClick={() => act(() => api.importRepoScan(project.id, { local_path: scanPath.trim(), apply: true }),
+            (outcome) => `Repo scan proposed ${outcome.created} new elements.`)}>
+          <ScanSearch size={16} /> Scan repo into C4</button>
+        <button className="m3-btn tonal" disabled={busy || project.jira.length === 0}
+          onClick={() => act(() => api.importJira(project.id),
+            (outcome) => `Imported ${outcome.created} Jira issues as proposed stories.`)}>
+          <DownloadCloud size={16} /> Import Jira issues</button>
+      </div>
+    </div>
+
+    <div className="m3-card" style={{ marginBottom: 16 }}>
+      <h3>Add a repo link</h3>
+      <label className="m3-field"><span>URL</span><input value={repoForm.url} onChange={(event) => setRepoForm({ ...repoForm, url: event.target.value })} /></label>
+      <label className="m3-field"><span>Local path</span><input value={repoForm.local_path} onChange={(event) => setRepoForm({ ...repoForm, local_path: event.target.value })} /></label>
+      <button className="m3-btn outlined small" disabled={busy || (!repoForm.url.trim() && !repoForm.local_path.trim())}
+        onClick={() => act(() => api.addRepo(project.id, { ...repoForm, mode: 'existing' }), () => 'Repo linked.')}>Link repo</button>
+    </div>
+
+    <div className="m3-card">
+      <h3>Add a Jira link</h3>
+      <label className="m3-field"><span>Instance</span>
+        <select value={jiraForm.instance_name} onChange={(event) => setJiraForm({ ...jiraForm, instance_name: event.target.value })}>
+          <option value="">— choose —</option>
+          {(config?.jira_instances || []).map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+        </select></label>
+      <label className="m3-field"><span>Project key</span><input value={jiraForm.project_key} onChange={(event) => setJiraForm({ ...jiraForm, project_key: event.target.value })} /></label>
+      <button className="m3-btn outlined small" disabled={busy || !jiraForm.instance_name || !jiraForm.project_key.trim()}
+        onClick={() => act(() => api.addJiraLink(project.id, jiraForm), () => 'Jira linked.')}>Link Jira</button>
+    </div>
+  </div>
+}
+
+export default function ProjectWorkspace({ projectId, config, notice }) {
+  const [tab, setTab] = useState('canvas')
+  const [project, setProject] = useState(null)
+  const [error, setError] = useState(null)
+
+  const refresh = useCallback(() => api.getProject(projectId).then(setProject).catch(setError), [projectId])
+  useEffect(() => { refresh() }, [refresh])
+
+  if (error) return <div className="m3-banner error">{String(error.message || error)}</div>
+  if (!project) return <p>Loading project…</p>
+
+  return <div className="m3-body" style={{ margin: '-24px -28px -80px' }}>
+    <nav className="m3-rail" aria-label="Project sections">
+      {TABS.map(({ id, label, icon: Icon }) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>
+        <span className="m3-rail-icon"><Icon size={20} /></span>{label}</button>)}
+    </nav>
+    <div className="m3-content">
+      <div className="m3-page-title">
+        <h1>{project.name}</h1>
+        <p>{TABS.find((item) => item.id === tab)?.label}</p>
+      </div>
+      {notice && tab === 'canvas' && <div className="m3-banner info">{notice}</div>}
+      {tab === 'canvas' && <C4Canvas projectId={projectId} config={config} />}
+      {tab === 'rollup' && <RollupDashboard projectId={projectId} />}
+      {tab === 'quick' && <QuickEstimate config={config} />}
+      {tab === 'overview' && <Overview project={project} config={config} onChanged={refresh} />}
+    </div>
+  </div>
+}

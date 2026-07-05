@@ -2,13 +2,27 @@
 
 Story Pointer is an evidence-led story-point estimator for React/Spring teams in regulated environments. It uses a checkpointed LangGraph pipeline to score delivery factors, identify drivers, compare fixed calibration stories, and only then conclude a modified-Fibonacci estimate. Every number is returned and rendered with a one-line summary and a plain-language explanation.
 
+Around that estimator sits a **project workspace**: create a project, link a code repo and a Jira project, model the system as an interactive **C4 diagram** (Material 3 UI, React Flow canvas), estimate the L3 components as stories with the architecture as evidence, and watch points roll up deterministically to epics (L2) and initiatives (L1).
+
 ## Architecture
 
-- **Frontend:** React 19, Vite, functional components, responsive accessible UI, incremental SSE consumption.
-- **Backend:** FastAPI, Pydantic, LangChain chat-model abstraction, LangGraph `StateGraph` with `MemorySaver`.
-- **Jira:** direct `httpx` integration. Jira Cloud uses REST v3 with Basic auth; Server/Data Center uses REST v2 with Bearer PAT auth. Reads use the documented search resource and writes use `PUT /issue/{issueKey}`.
+- **Frontend:** React 19, Vite, Material 3 shell, React Flow C4 canvas, incremental SSE consumption.
+- **Backend:** FastAPI, Pydantic, LangChain chat-model abstraction, LangGraph `StateGraph` with a durable `AsyncSqliteSaver` checkpointer (falls back to `MemorySaver`).
+- **Persistence:** stdlib SQLite in `data/storypointer.db` for projects, C4 elements/relations, and artifact links; `data/checkpoints.db` for LangGraph sessions. Override with `STORYPOINTER_DB`.
+- **Jira:** direct `httpx` integration. Jira Cloud uses REST v3 with Basic auth; Server/Data Center uses REST v2 with Bearer PAT auth. Reads use the documented search resource, writes use `PUT /issue/{issueKey}` and `POST /issue`.
 - **Files:** pandas reads CSV/XLS/XLSX, `openpyxl` reads/writes XLSX, and `xlrd` supports legacy XLS.
 - **Calibration:** six fixed stories in `backend/anchors.py`; no embeddings, vector store, or retrieval.
+
+## C4 model ↔ Agile artifacts
+
+| C4 level | Agile artifact | Estimation |
+|---|---|---|
+| L1 System context | Theme / initiative | Roll-up of child epics |
+| L2 Container | Epic | Roll-up of child stories |
+| L3 Component | Story / feature | Estimated directly by the pipeline |
+| L4 Code | Task / sub-task / PR | Seeded from detected hidden tasks |
+
+Cross-cutting artifacts tag elements instead of parenting them: bugs (L3+L4), tech debt (L2+L3), architecture flows (L2+L3). A 13-point estimate's split proposal seeds sibling L3 stories; hidden tasks seed L4 children — both arrive with a `proposed` status and stay out of the roll-up until accepted.
 
 The API streams [Server-Sent Events](https://html.spec.whatwg.org/multipage/server-sent-events.html) (`text/event-stream`). Node events contain progress only. A final result is emitted atomically after both required explanations exist, so a point value is never shown alone.
 
@@ -36,13 +50,27 @@ uvicorn backend.api.main:app --reload --port 8000
 npm run dev
 ```
 
-Open `http://localhost:5173`. Useful checks:
+Open `http://localhost:5173`. Seed a demo project with a small C4 model:
+
+```powershell
+python scripts\seed_demo.py
+```
+
+Useful checks:
 
 ```powershell
 pytest backend/tests -q
 npm test
 npm run build
 ```
+
+## Project workspace flow
+
+1. **Projects home** lists project cards; the **＋ New project** FAB opens a wizard (basics → repo → Jira → seed). Every step after the name is skippable. **Quick estimate** keeps the original form/Jira/spreadsheet flow, also available inside each project.
+2. **Seeding**: link a local checkout path and *Scan repo into C4* proposes L2 containers and L3 components from the code layout; *Import Jira issues* creates proposed L3 stories from the linked Jira project. Both are idempotent.
+3. **C4 canvas**: click a node to inspect, double-click to drill a level down, drag between nodes to draw a relation, drag nodes to arrange (positions persist). Add elements at the current level from the toolbar.
+4. **Inspector**: edit the description (the estimation evidence), then *Estimate* — the LangGraph pipeline streams live with the element's parent chain, relations, and code path injected as `c4_context`. *Refine* reuses the same checkpointed session. Accept or delete proposed elements, tag bugs, link or create Jira issues (created only when writes are enabled and confirmed).
+5. **Roll-up** shows initiative → epic → story → task with deterministic point sums, spike/split flags, and *Estimate all pending* for sequential batch estimation.
 
 ## Provider switches
 
@@ -139,6 +167,18 @@ After derivation, a 13 or High uncertainty takes the conditional spike/split bra
 | POST | `/estimate` | Stream one checkpointed estimate or refinement |
 | POST | `/estimate/batch` | Stream sequential per-story progress and results |
 | POST | `/jira/{instance}/{issueKey}/points` | Explicitly confirmed, gated write-back |
+| POST/GET | `/projects` | Create / list projects |
+| GET/DELETE | `/projects/{id}` | Project detail with links / cascade delete |
+| POST | `/projects/{id}/repos`, `/projects/{id}/jira` | Link a repo or a Jira project |
+| GET | `/projects/{id}/c4/graph` | Full C4 model (elements + relations + artifacts) |
+| POST/PATCH/DELETE | `/projects/{id}/c4/elements[/{eid}]` | C4 element CRUD (parent must be one level up) |
+| POST/DELETE | `/projects/{id}/c4/relations[/{rid}]` | C4 relation CRUD |
+| POST | `/projects/{id}/c4/elements/{eid}/tag` | Tag cross-cutting bug / tech_debt / arch_flow |
+| POST | `/projects/{id}/c4/import/repo-scan` | Propose (and optionally apply) elements from a local repo |
+| POST | `/projects/{id}/c4/import/jira` | Import Jira issues as proposed stories |
+| POST | `/projects/{id}/elements/{eid}/estimate` | Stream an estimate with `c4_context` evidence (L3/L4 only) |
+| POST | `/projects/{id}/elements/{eid}/artifact` | Link or create (gated) the mapped Jira issue |
+| GET | `/projects/{id}/rollup` | Deterministic initiative→epic→story roll-up with flags |
 
 Errors use `{ "error": { "code", "message", "details", "retryable" } }`. Streaming failures use the same fields in an `error` or `item_error` event.
 
