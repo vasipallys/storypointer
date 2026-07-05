@@ -1,6 +1,6 @@
 # Design: Project Workspace with C4 Model and Estimation Roll-ups
 
-Status: proposal (base design and flow — no code yet)
+Status: implemented (2026-07-05) — all four phases landed in one pass; this document is the design rationale. Usage lives in the README ("Project workspace flow").
 
 ## Idea in one paragraph
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
@@ -42,9 +43,19 @@ async def _install_durable_checkpointer(stack: AsyncExitStack) -> None:
         from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
     except ImportError:
         return
+
+    class JsonSafeMetadataSaver(AsyncSqliteSaver):
+        """AsyncSqliteSaver serializes metadata with stdlib json, which crashes on
+        LangChain message objects inside node writes. The checkpoint blob itself uses
+        the real serializer, so stringifying metadata values is lossless for resume."""
+
+        async def aput(self, config, checkpoint, metadata, new_versions):
+            safe_metadata = json.loads(json.dumps(metadata, default=str))
+            return await super().aput(config, checkpoint, safe_metadata, new_versions)
+
     path = checkpoint_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    saver = await stack.enter_async_context(AsyncSqliteSaver.from_conn_string(str(path)))
+    saver = await stack.enter_async_context(JsonSafeMetadataSaver.from_conn_string(str(path)))
     set_checkpointer(saver)
     get_estimation_graph.cache_clear()
 

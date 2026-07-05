@@ -122,9 +122,9 @@ class Settings(BaseSettings):
     def validate_startup(self) -> None:
         errors: list[str] = []
         try:
-            llm = self.llm
-            if not llm.api_key.get_secret_value():
-                errors.append("LLM_API_KEY is required")
+            # Shape validation only; the API key requirement is provider-specific
+            # and lives in the LLM factory (mock mode needs no key).
+            self.llm
         except ConfigurationError as exc:
             errors.extend(exc.errors)
         try:

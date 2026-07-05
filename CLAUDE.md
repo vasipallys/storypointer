@@ -52,7 +52,7 @@ Frontend scripts live in the root `package.json` but pass `--config frontend/vit
 
 ### Strict module boundaries
 
-- `backend/llm/factory.py` is the **only** module allowed to know provider names. Native LangChain providers go in `NATIVE_PROVIDERS` (via `init_chat_model`); OpenAI-compatible endpoints (Moonshot, DeepSeek, Ollama, …) share `ChatOpenAI(base_url=...)` via `OPENAI_COMPATIBLE`. Groq gets `json_mode` structured output. Adding a provider means editing this file only.
+- `backend/llm/factory.py` is the **only** module allowed to know provider names. Native LangChain providers go in `NATIVE_PROVIDERS` (via `init_chat_model`); OpenAI-compatible endpoints (Moonshot, DeepSeek, Ollama, …) share `ChatOpenAI(base_url=...)` via `OPENAI_COMPATIBLE`. Groq gets `json_mode` structured output. `LLM_PROVIDER=mock` (`OFFLINE_PROVIDERS`) needs no API key and routes structured calls to the deterministic [backend/llm/mock.py](backend/llm/mock.py) — points come from a hash of the story title, so tests and demos are stable and offline. The API-key requirement is provider-specific and lives in `validate_factory_config`, not `config.py`. Adding a provider means editing the factory only.
 - `backend/jira/registry.py` mirrors that boundary for Jira: `JIRA_INSTANCES=prod,sandbox` env names expand to `JIRA_<NAME>_*` variables parsed in `backend/config.py`. Cloud instances use REST v3 + Basic auth (email + token); Server/DC uses REST v2 + Bearer PAT (`backend/jira/client.py`). Instance names/auth are validated at startup, credentials lazily on first use.
 - `backend/anchors.py` holds six fixed calibration stories injected into every comparison prompt — no embeddings or retrieval. Calibration changes are edits to this file plus an API restart.
 

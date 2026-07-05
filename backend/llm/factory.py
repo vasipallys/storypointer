@@ -15,6 +15,7 @@ from backend.config import ConfigurationError, get_settings
 
 OPENAI_COMPATIBLE = {"moonshot", "deepseek", "openrouter", "ollama", "vllm", "compatible"}
 NATIVE_PROVIDERS = {"anthropic", "google_genai", "openai", "groq", "mistral"}
+OFFLINE_PROVIDERS = {"mock"}
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 
@@ -23,10 +24,12 @@ def validate_factory_config() -> None:
     config = get_settings().llm
     provider = config.provider.lower()
     errors = []
-    if provider not in OPENAI_COMPATIBLE | NATIVE_PROVIDERS:
+    if provider not in OPENAI_COMPATIBLE | NATIVE_PROVIDERS | OFFLINE_PROVIDERS:
         errors.append(f"Unsupported LLM_PROVIDER '{config.provider}'")
     if provider in OPENAI_COMPATIBLE and not config.base_url:
         errors.append(f"LLM_BASE_URL is required for provider '{config.provider}'")
+    if provider not in OFFLINE_PROVIDERS and not config.api_key.get_secret_value():
+        errors.append("LLM_API_KEY is required")
     if errors:
         raise ConfigurationError(errors)
 
@@ -37,6 +40,10 @@ def get_llm() -> BaseChatModel:
     config = get_settings().llm
     provider = config.provider.lower()
     validate_factory_config()
+    if provider in OFFLINE_PROVIDERS:
+        from langchain_core.language_models import FakeListChatModel
+
+        return FakeListChatModel(responses=["Mock mode is active; structured estimation uses the offline mock."])
     common = {
         "model": config.model,
         "temperature": config.temperature,
@@ -52,6 +59,10 @@ def get_llm() -> BaseChatModel:
 def get_structured_llm(schema: type[SchemaT]) -> Runnable:
     """Return a schema-constrained model using the provider's reliable mode."""
     config = get_settings().llm
+    if config.provider.lower() in OFFLINE_PROVIDERS:
+        from backend.llm.mock import MockStructuredLLM
+
+        return MockStructuredLLM(schema)
     model = get_llm()
     if config.provider.lower() == "groq":
         # Groq JSON mode avoids tool_use_failed errors from otherwise-valid tool args.

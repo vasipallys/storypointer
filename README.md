@@ -76,6 +76,16 @@ npm run build
 
 Only `backend/.env` changes. Provider and model strings do not appear in application code outside `backend/llm/factory.py`.
 
+**Mock (offline — no key, no network)**
+
+```dotenv
+LLM_PROVIDER=mock
+LLM_MODEL=mock
+LLM_API_KEY=
+```
+
+Mock mode returns deterministic, schema-valid estimates derived from a hash of the story title (same story → same points; a 13 exercises the spike/split branch and split proposals). Every output is clearly labeled "Mock". Use it for demos, UI development, and trying the C4 workspace without a provider account or rate limits.
+
 **Claude**
 
 ```dotenv
