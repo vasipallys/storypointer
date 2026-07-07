@@ -12,7 +12,7 @@ from backend.c4 import service, store
 from backend.c4.models import C4ElementCreate, C4ElementUpdate, C4RelationCreate
 from backend.c4.scan import scan_repo
 from backend.projects import store as projects
-from backend.projects.models import ProjectCreate, RepoLinkCreate
+from backend.projects.models import Lead, ProjectCreate, ProjectUpdate, RepoLinkCreate
 from backend.storage import db
 
 
@@ -47,6 +47,29 @@ def test_project_crud_and_links():
     projects.delete_project(project["id"])
     with pytest.raises(projects.NotFoundError):
         projects.get_project(project["id"])
+
+
+def test_platform_leads_create_update_and_hydrate():
+    project = projects.create_project(ProjectCreate(
+        name="Payments platform",
+        leads=[Lead(name="Priya Nair", role="Engineering lead"), Lead(name="Sam Okafor")],
+    ))
+    # Leads round-trip as parsed objects on both create and list.
+    assert project["leads"][0] == {"name": "Priya Nair", "role": "Engineering lead"}
+    assert projects.list_projects()[0]["leads"][1]["name"] == "Sam Okafor"
+
+    # A leads-only update replaces them and leaves name/description untouched.
+    updated = projects.update_project(project["id"], ProjectUpdate(leads=[Lead(name="Dana Lee", role="Product")]))
+    assert updated["name"] == "Payments platform"
+    assert updated["leads"] == [{"name": "Dana Lee", "role": "Product"}]
+
+    # Omitting leads on update preserves the existing leads.
+    renamed = projects.update_project(project["id"], ProjectUpdate(name="Payments"))
+    assert renamed["name"] == "Payments"
+    assert renamed["leads"] == [{"name": "Dana Lee", "role": "Product"}]
+
+    with pytest.raises(projects.NotFoundError):
+        projects.update_project("missing", ProjectUpdate(name="x"))
 
 
 def test_parent_level_rule_is_enforced():

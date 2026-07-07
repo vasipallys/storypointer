@@ -3,6 +3,7 @@ import '@xyflow/react/dist/style.css'
 import { ChevronRight, Plus, RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
+import DockablePanel from '../components/DockablePanel'
 import EstimateDialog from './EstimateDialog'
 import InspectorPanel from './InspectorPanel'
 
@@ -19,14 +20,15 @@ function C4Node({ data }) {
     </header>
     <strong>{element.name}</strong>
     {element.tech && <div className="c4-tech">{element.tech}</div>}
-    {data.childCount > 0 && <div className="c4-tech">{data.childCount} inside · double-click to open</div>}
+    {element.level === 'L1' && <div className="c4-tech">click for summary{data.childCount > 0 ? ' · double-click to open' : ''}</div>}
+    {element.level !== 'L1' && data.childCount > 0 && <div className="c4-tech">{data.childCount} inside · double-click to open</div>}
     <Handle type="source" position={Position.Right} />
   </div>
 }
 
 const nodeTypes = { c4: C4Node }
 
-export default function C4Canvas({ projectId, config }) {
+export default function C4Canvas({ projectId, config, onOpenL1Plan }) {
   const [graph, setGraph] = useState({ elements: [], relations: [] })
   const [drill, setDrill] = useState([])
   const [selectedId, setSelectedId] = useState(null)
@@ -149,10 +151,13 @@ export default function C4Canvas({ projectId, config }) {
             <p>Use “Add {KIND_LABEL[addLevel]}” to place the first {addLevel} element{drill.length === 0 ? ', or seed from a repo scan in Overview' : ''}.</p></div>
         </div>}
       </div>
-      <InspectorPanel projectId={projectId} element={selected} config={config}
-        hasCachedResult={selected ? resultsCache.current.has(selected.id) : false}
-        onEstimate={(element, autoStart) => setEstimating({ element, autoStart })}
-        onChanged={refresh} onDeleted={() => { setSelectedId(null); refresh() }} />
+      <DockablePanel id="c4-inspector" side="right" title="Inspector" defaultWidth={400} minWidth={300} maxWidth={640}>
+        <InspectorPanel projectId={projectId} element={selected} config={config}
+          hasCachedResult={selected ? resultsCache.current.has(selected.id) : false}
+          onEstimate={(element, autoStart) => setEstimating({ element, autoStart })}
+          onOpenL1Plan={onOpenL1Plan}
+          onChanged={refresh} onDeleted={() => { setSelectedId(null); refresh() }} />
+      </DockablePanel>
     </div>
     {estimating && <EstimateDialog projectId={projectId} element={estimating.element}
       autoStart={estimating.autoStart}

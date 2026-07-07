@@ -1,12 +1,16 @@
-import { DownloadCloud, FolderGit2, LayoutDashboard, Network, ScanSearch, Sigma, Zap } from 'lucide-react'
+import { DownloadCloud, FolderGit2, Landmark, LayoutDashboard, Network, ScanSearch, Sigma, UsersRound, Zap } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api/client'
+import DockablePanel from '../components/DockablePanel'
+import LeadsEditor from '../components/LeadsEditor'
 import C4Canvas from '../c4/C4Canvas'
 import RollupDashboard from '../c4/RollupDashboard'
+import L1Planning from '../planning/L1Planning'
 import QuickEstimate from './QuickEstimate'
 
 const TABS = [
   { id: 'canvas', label: 'C4 canvas', icon: Network },
+  { id: 'planning', label: 'L1 plan', icon: Landmark },
   { id: 'rollup', label: 'Roll-up', icon: Sigma },
   { id: 'quick', label: 'Quick', icon: Zap },
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -16,6 +20,7 @@ function Overview({ project, config, onChanged }) {
   const [scanPath, setScanPath] = useState(project.repos.find((repo) => repo.local_path)?.local_path || '')
   const [jiraForm, setJiraForm] = useState({ instance_name: '', project_key: '' })
   const [repoForm, setRepoForm] = useState({ url: '', local_path: '' })
+  const [leads, setLeads] = useState(project.leads || [])
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState(null)
   const [error, setError] = useState(null)
@@ -25,6 +30,11 @@ function Overview({ project, config, onChanged }) {
     try { const outcome = await action(); setNotice(message(outcome)); onChanged() }
     catch (err) { setError(err) } finally { setBusy(false) }
   }
+  const saveLeads = () => act(
+    () => api.updateProject(project.id, { leads: leads.map((lead) => ({ name: (lead.name || '').trim(), role: (lead.role || '').trim() })).filter((lead) => lead.name) }),
+    () => 'Leads updated.',
+  )
+  const leadsDirty = JSON.stringify(leads) !== JSON.stringify(project.leads || [])
 
   return <div style={{ maxWidth: 760 }}>
     {notice && <div className="m3-banner info">{notice}</div>}
@@ -33,8 +43,18 @@ function Overview({ project, config, onChanged }) {
       <h3>{project.name}</h3>
       <div className="m3-meta">{project.description || 'No description'}</div>
       <div className="m3-card-chips">
+        {(project.leads || []).map((lead, index) => <span key={index} className="m3-chip filled"><UsersRound size={13} /> {lead.name}{lead.role ? ` · ${lead.role}` : ''}</span>)}
         {project.repos.map((repo) => <span key={repo.id} className="m3-chip"><FolderGit2 size={13} /> {repo.url || repo.local_path}{repo.mode === 'new' ? ' (planned)' : ''}</span>)}
         {project.jira.map((link) => <span key={link.id} className="m3-chip filled">{link.instance_name} · {link.project_key}</span>)}
+      </div>
+    </div>
+
+    <div className="m3-card" style={{ marginBottom: 16 }}>
+      <h3>Platform leads</h3>
+      <p className="m3-meta">The people accountable for this platform. Add one or more.</p>
+      <LeadsEditor leads={leads} onChange={setLeads} />
+      <div className="m3-inspector-actions">
+        <button className="m3-btn filled small" disabled={busy || !leadsDirty} onClick={saveLeads}>Save leads</button>
       </div>
     </div>
 
@@ -79,6 +99,7 @@ function Overview({ project, config, onChanged }) {
 
 export default function ProjectWorkspace({ projectId, config, notice }) {
   const [tab, setTab] = useState('canvas')
+  const [planningL1Id, setPlanningL1Id] = useState(null)
   const [project, setProject] = useState(null)
   const [error, setError] = useState(null)
 
@@ -86,20 +107,25 @@ export default function ProjectWorkspace({ projectId, config, notice }) {
   useEffect(() => { refresh() }, [refresh])
 
   if (error) return <div className="m3-content"><div className="m3-banner error">{String(error.message || error)}</div></div>
-  if (!project) return <p className="m3-content">Loading project…</p>
+  if (!project) return <p className="m3-content">Loading platform…</p>
 
   return <div className="m3-body">
-    <nav className="m3-rail" aria-label="Project sections">
-      {TABS.map(({ id, label, icon: Icon }) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>
-        <span className="m3-rail-icon"><Icon size={20} /></span>{label}</button>)}
-    </nav>
+    <DockablePanel id="workspace-rail" side="left" title="Sections" defaultWidth={88} minWidth={76} maxWidth={140}>
+      <nav className="m3-rail" aria-label="Platform sections">
+        {TABS.map(({ id, label, icon: Icon }) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>
+          <span className="m3-rail-icon"><Icon size={20} /></span>{label}</button>)}
+      </nav>
+    </DockablePanel>
     <div className="m3-content">
       <div className="m3-page-title">
         <h1>{project.name}</h1>
         <p>{TABS.find((item) => item.id === tab)?.label}</p>
       </div>
       {notice && tab === 'canvas' && <div className="m3-banner info">{notice}</div>}
-      {tab === 'canvas' && <C4Canvas projectId={projectId} config={config} />}
+      {tab === 'canvas' && <C4Canvas projectId={projectId} config={config}
+        onOpenL1Plan={(elementId) => { setPlanningL1Id(elementId); setTab('planning') }} />}
+      {tab === 'planning' && <L1Planning projectId={projectId} requestedL1Id={planningL1Id}
+        onL1Change={setPlanningL1Id} onOpenCanvas={() => setTab('canvas')} />}
       {tab === 'rollup' && <RollupDashboard projectId={projectId} />}
       {tab === 'quick' && <QuickEstimate config={config} />}
       {tab === 'overview' && <Overview project={project} config={config} onChanged={refresh} />}

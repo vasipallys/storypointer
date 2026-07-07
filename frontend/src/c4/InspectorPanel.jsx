@@ -1,18 +1,35 @@
-import { Bug, ExternalLink, Eye, Save, Sparkles, Trash2 } from 'lucide-react'
+import { ArrowRight, Blocks, Bug, CalendarRange, ExternalLink, Eye, Save, Sparkles, Trash2, UsersRound, WalletCards } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 
 const ARTIFACT_LABEL = { initiative: 'Theme / initiative', epic: 'Epic', story: 'Story / feature', task: 'Task / sub-task', bug: 'Bug', tech_debt: 'Tech debt', arch_flow: 'Architecture flow' }
 const LEVEL_ARTIFACT = { L1: 'initiative', L2: 'epic', L3: 'story', L4: 'task' }
 
-export default function InspectorPanel({ projectId, element, config, hasCachedResult, onEstimate, onChanged, onDeleted }) {
+export default function InspectorPanel({ projectId, element, config, hasCachedResult, onEstimate, onOpenL1Plan, onChanged, onDeleted }) {
   const [description, setDescription] = useState('')
   const [error, setError] = useState(null)
+  const [l1Plan, setL1Plan] = useState(null)
+  const [l1Loading, setL1Loading] = useState(false)
 
   useEffect(() => {
     setDescription(element?.description || '')
     setError(null)
   }, [element?.id])
+
+  useEffect(() => {
+    let active = true
+    setL1Plan(null)
+    if (element?.level !== 'L1') {
+      setL1Loading(false)
+      return () => { active = false }
+    }
+    setL1Loading(true)
+    api.l1Plan(projectId, element.id)
+      .then((plan) => { if (active) setL1Plan(plan) })
+      .catch((nextError) => { if (active) setError(nextError) })
+      .finally(() => { if (active) setL1Loading(false) })
+    return () => { active = false }
+  }, [projectId, element?.id, element?.level])
 
   if (!element) {
     return <aside className="m3-inspector"><div className="m3-empty" style={{ padding: '40px 10px' }}>
@@ -24,6 +41,11 @@ export default function InspectorPanel({ projectId, element, config, hasCachedRe
   const estimable = element.level === 'L3' || element.level === 'L4'
   const artifacts = element.artifacts || []
   const estimated = artifacts.find((item) => item.points != null)
+  const planCurrency = l1Plan?.settings?.currency_code || 'USD'
+  const money = (value) => {
+    try { return new Intl.NumberFormat(undefined, { style: 'currency', currency: planCurrency, maximumFractionDigits: 0 }).format(value || 0) }
+    catch { return `${planCurrency} ${Math.round(value || 0).toLocaleString()}` }
+  }
 
   const saveDescription = () => api.updateElement(projectId, element.id, { description }).then(onChanged).catch(setError)
   const acceptProposed = () => api.updateElement(projectId, element.id, { status: 'active' }).then(onChanged).catch(setError)
@@ -70,6 +92,22 @@ export default function InspectorPanel({ projectId, element, config, hasCachedRe
     </div>}
     {!estimable && <p style={{ color: 'var(--m3-on-surface-variant)', fontSize: 13 }}>
       {element.level} elements are not estimated directly — points roll up from the L3 stories inside (see the Roll-up tab).</p>}
+
+    {element.level === 'L1' && <section className="l1-inspector-summary" aria-label="L1 operating plan summary">
+      <header><div><span>Operating plan</span><strong>Delivery & investment</strong></div><span className="m3-chip">{planCurrency}</span></header>
+      {l1Loading
+        ? <div className="l1-inspector-loading">Loading plan summary…</div>
+        : <><div className="l1-inspector-metrics">
+          <div><UsersRound size={16} /><span><strong>{l1Plan?.metrics.squads || 0}</strong> squads · {l1Plan?.metrics.people || 0} people</span></div>
+          <div><WalletCards size={16} /><span><strong>{money(l1Plan?.metrics.monthly_run_rate)}</strong> monthly run-rate</span></div>
+          <div><CalendarRange size={16} /><span><strong>{money(l1Plan?.metrics.planned_cost)}</strong> approved budget</span></div>
+          <div><Blocks size={16} /><span><strong>{l1Plan?.diagrams.length || 0}</strong> technical views</span></div>
+        </div>
+        <p>{l1Plan?.work_items.length || 0} work packages · {l1Plan?.metrics.at_risk_work || 0} at risk · {l1Plan?.metrics.allocated_fte || 0} allocated FTE</p></>}
+      <button className="m3-btn filled l1-more-details" onClick={() => onOpenL1Plan?.(element.id)}>
+        More details <ArrowRight size={16} />
+      </button>
+    </section>}
 
     <dl className="m3-kv">
       {element.tech && <><dt>Tech</dt><dd>{element.tech}</dd></>}

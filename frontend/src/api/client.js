@@ -1,4 +1,5 @@
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, '')
+const runtimeConfig = typeof window !== 'undefined' ? window.storyPointer : null
+const API_BASE = (runtimeConfig?.apiBaseUrl || import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, '')
 
 async function jsonRequest(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, options)
@@ -10,6 +11,20 @@ async function jsonRequest(path, options = {}) {
     throw error
   }
   return body
+}
+
+async function downloadRequest(path, options = {}) {
+  const response = await fetch(`${API_BASE}${path}`, options)
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    const detail = body.error || body.detail || body
+    const error = new Error(detail.message || `Request failed (${response.status})`)
+    error.payload = detail
+    throw error
+  }
+  const disposition = response.headers.get('Content-Disposition') || ''
+  const filename = disposition.match(/filename="([^"]+)"/i)?.[1] || 'requirements-export'
+  return { blob: await response.blob(), filename }
 }
 
 export async function consumeSSE(path, payload, onEvent, signal) {
@@ -77,6 +92,7 @@ export const api = {
   listProjects: () => jsonRequest('/projects'),
   createProject: (payload) => json('/projects', 'POST', payload),
   getProject: (id) => jsonRequest(`/projects/${id}`),
+  updateProject: (id, payload) => json(`/projects/${id}`, 'PATCH', payload),
   deleteProject: (id) => jsonRequest(`/projects/${id}`, { method: 'DELETE' }),
   addRepo: (id, payload) => json(`/projects/${id}/repos`, 'POST', payload),
   addJiraLink: (id, payload) => json(`/projects/${id}/jira`, 'POST', payload),
@@ -94,6 +110,35 @@ export const api = {
   createArtifact: (id, elementId, payload) => json(`/projects/${id}/elements/${elementId}/artifact`, 'POST', payload),
   estimateElement: (id, elementId, payload, onEvent, signal) =>
     consumeSSE(`/projects/${id}/elements/${elementId}/estimate`, payload, onEvent, signal),
+
+  l1Plan: (id, elementId) => jsonRequest(`/projects/${id}/l1/${elementId}/plan`),
+  updateL1Plan: (id, elementId, payload) => json(`/projects/${id}/l1/${elementId}/plan`, 'PATCH', payload),
+  createAgileUnit: (id, elementId, payload) => json(`/projects/${id}/l1/${elementId}/units`, 'POST', payload),
+  updateAgileUnit: (id, unitId, payload) => json(`/projects/${id}/l1/units/${unitId}`, 'PATCH', payload),
+  deleteAgileUnit: (id, unitId) => jsonRequest(`/projects/${id}/l1/units/${unitId}`, { method: 'DELETE' }),
+  createTeamMember: (id, unitId, payload) => json(`/projects/${id}/l1/units/${unitId}/members`, 'POST', payload),
+  updateTeamMember: (id, memberId, payload) => json(`/projects/${id}/l1/members/${memberId}`, 'PATCH', payload),
+  deleteTeamMember: (id, memberId) => jsonRequest(`/projects/${id}/l1/members/${memberId}`, { method: 'DELETE' }),
+  createWorkItem: (id, elementId, payload) => json(`/projects/${id}/l1/${elementId}/work`, 'POST', payload),
+  updateWorkItem: (id, workItemId, payload) => json(`/projects/${id}/l1/work/${workItemId}`, 'PATCH', payload),
+  deleteWorkItem: (id, workItemId) => jsonRequest(`/projects/${id}/l1/work/${workItemId}`, { method: 'DELETE' }),
+  createDiagram: (id, elementId, payload) => json(`/projects/${id}/l1/${elementId}/diagrams`, 'POST', payload),
+  updateDiagram: (id, diagramId, payload) => json(`/projects/${id}/l1/diagrams/${diagramId}`, 'PATCH', payload),
+  deleteDiagram: (id, diagramId) => jsonRequest(`/projects/${id}/l1/diagrams/${diagramId}`, { method: 'DELETE' }),
+  generateDiagram: (id, elementId, payload) => json(`/projects/${id}/l1/${elementId}/diagrams/generate`, 'POST', payload),
+  assistDiagram: (id, elementId, payload) => json(`/projects/${id}/l1/${elementId}/diagrams/assist`, 'POST', payload),
+  listRequirements: (id, elementId) => jsonRequest(`/projects/${id}/l1/${elementId}/requirements`),
+  createRequirement: (id, elementId, payload) => json(`/projects/${id}/l1/${elementId}/requirements`, 'POST', payload),
+  getRequirement: (id, documentId) => jsonRequest(`/projects/${id}/l1/requirements/${documentId}`),
+  getRequirementVersion: (id, documentId, version) => jsonRequest(`/projects/${id}/l1/requirements/${documentId}/versions/${version}`),
+  updateRequirement: (id, documentId, payload) => json(`/projects/${id}/l1/requirements/${documentId}`, 'PATCH', payload),
+  addRequirementComment: (id, documentId, payload) => json(`/projects/${id}/l1/requirements/${documentId}/comments`, 'POST', payload),
+  actOnRequirementComment: (id, commentId, payload) => json(`/projects/${id}/l1/requirements/comments/${commentId}`, 'PATCH', payload),
+  reviewRequirement: (id, documentId, payload) => json(`/projects/${id}/l1/requirements/${documentId}/review`, 'POST', payload),
+  exportRequirement: (id, documentId, format, payload = {}) => downloadRequest(
+    `/projects/${id}/l1/requirements/${documentId}/export/${format}`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) },
+  ),
 }
 
 function json(path, method, payload) {

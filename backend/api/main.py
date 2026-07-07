@@ -28,6 +28,7 @@ from backend.models import (
     JiraWriteRequest,
     UploadEstimateRequest,
 )
+from backend.planning.router import router as planning_router
 from backend.projects.router import router as projects_router
 from backend.storage.db import checkpoint_path, init_db
 
@@ -82,9 +83,11 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 app.include_router(projects_router)
 app.include_router(c4_router)
+app.include_router(planning_router)
 
 
 @app.exception_handler(RequestValidationError)

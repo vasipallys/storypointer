@@ -112,6 +112,66 @@ def _build(schema: type[BaseModel], title: str) -> BaseModel:
     raise RuntimeError(f"Mock LLM has no builder for schema '{schema.__name__}'")
 
 
+_STOPWORDS = {
+    "the", "a", "an", "and", "or", "of", "for", "to", "with", "that", "this", "add", "create",
+    "new", "diagram", "show", "make", "into", "from", "using", "please", "our", "then", "when",
+    "flow", "between", "should", "which", "node", "connect", "change", "update", "modify",
+}
+
+
+def _keywords(text: str, limit: int = 5) -> list[str]:
+    words = re.findall(r"[A-Za-z][A-Za-z0-9]+", text)
+    picks: list[str] = []
+    for word in words:
+        if word.lower() in _STOPWORDS or len(word) < 3:
+            continue
+        capital = word[:1].upper() + word[1:]
+        if capital not in picks:
+            picks.append(capital)
+        if len(picks) >= limit:
+            break
+    return picks or ["System", "Service", "Data"]
+
+
+def _node_id(label: str, index: int) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9]", "", label)[:14]
+    return f"{cleaned or 'node'}{index}"
+
+
+def _build_diagram_ai(messages: list[Any]) -> BaseModel:
+    """Deterministic offline diagram authoring for LLM_PROVIDER=mock."""
+    from backend.planning.models import DiagramAIOutput
+
+    text = " ".join(str(getattr(message, "content", message)) for message in messages)
+    instruction = ""
+    match = re.search(r"INSTRUCTION:\s*(.+)", text)
+    if match:
+        instruction = match.group(1).splitlines()[0].strip()
+    current = ""
+    block = re.search(r"CURRENT DIAGRAM:\s*```mermaid\s*(.+?)```", text, re.DOTALL)
+    if block and block.group(1).strip():
+        current = block.group(1).strip()
+
+    if current:
+        label = _keywords(instruction, 1)[0]
+        node = f"{_node_id(label, 0)}x"
+        lines = [current.rstrip(), f'  {node}["{label}"]']
+        anchor = re.search(r"^\s*([A-Za-z0-9_]+)\s*[\[({]", current, re.MULTILINE) or re.search(r"\b([A-Za-z0-9_]+)\s*(?:--|==|-\.)", current)
+        if anchor:
+            lines.append(f"  {anchor.group(1)} --> {node}")
+        mermaid = "\n".join(lines)
+        message = f"Mock mode: added '{label}' to the diagram."
+    else:
+        labels = _keywords(instruction)
+        ids = [_node_id(label, index) for index, label in enumerate(labels)]
+        lines = ["flowchart LR"]
+        lines += [f'  {node}["{label}"]' for node, label in zip(ids, labels)]
+        lines += [f"  {source} --> {target}" for source, target in zip(ids, ids[1:])]
+        mermaid = "\n".join(lines)
+        message = f"Mock mode: drafted a {len(ids)}-node flowchart from your prompt."
+    return DiagramAIOutput(mermaid=mermaid, message=message)
+
+
 class MockStructuredLLM:
     """Stands in for a structured chat model; returns a valid schema instance."""
 
@@ -120,4 +180,6 @@ class MockStructuredLLM:
 
     async def ainvoke(self, messages: list[Any]) -> BaseModel:
         await asyncio.sleep(0.15)  # let the streaming pipeline view animate
+        if self.schema.__name__ == "DiagramAIOutput":
+            return _build_diagram_ai(messages)
         return _build(self.schema, _title(messages))

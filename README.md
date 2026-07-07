@@ -6,11 +6,11 @@ Around that estimator sits a **project workspace**: create a project, link a cod
 
 ## Architecture
 
-- **Frontend:** React 19, Vite, Material 3 shell, React Flow C4 canvas, incremental SSE consumption.
+- **Frontend:** React 19, Vite, Material 3 shell, React Flow C4 canvas, `react-markdown`/GFM requirement documents, Mermaid rendering, and incremental SSE consumption.
 - **Backend:** FastAPI, Pydantic, LangChain chat-model abstraction, LangGraph `StateGraph` with a durable `AsyncSqliteSaver` checkpointer (falls back to `MemorySaver`).
-- **Persistence:** stdlib SQLite in `data/storypointer.db` for projects, C4 elements/relations, and artifact links; `data/checkpoints.db` for LangGraph sessions. Override with `STORYPOINTER_DB`.
+- **Persistence:** stdlib SQLite in `data/storypointer.db` for projects, C4 elements/relations, artifact links, L1 teams, costed work plans, Mermaid diagrams, versioned requirements, comments, approvals, and immutable audit events; `data/checkpoints.db` for LangGraph sessions. Override with `STORYPOINTER_DB`.
 - **Jira:** direct `httpx` integration. Jira Cloud uses REST v3 with Basic auth; Server/Data Center uses REST v2 with Bearer PAT auth. Reads use the documented search resource, writes use `PUT /issue/{issueKey}` and `POST /issue`.
-- **Files:** pandas reads CSV/XLS/XLSX, `openpyxl` reads/writes XLSX, and `xlrd` supports legacy XLS.
+- **Files:** pandas reads CSV/XLS/XLSX, `openpyxl` reads/writes XLSX, `xlrd` supports legacy XLS, and `python-docx`/`python-pptx` generate requirement exports with rendered Mermaid images.
 - **Calibration:** six fixed stories in `backend/anchors.py`; no embeddings, vector store, or retrieval.
 
 ## C4 model ↔ Agile artifacts
@@ -65,13 +65,59 @@ npm test
 npm run build
 ```
 
+## Run modes: web and desktop
+
+Story Pointer supports two runtimes that share the same React/FastAPI codebase:
+
+- **Web mode**: run FastAPI and Vite in separate terminals for browser access.
+- **Desktop mode**: run the same UI inside Electron. Electron starts a local FastAPI process, stores SQLite data under the user's app-data folder, and points the UI to that local API at runtime.
+
+Web development:
+
+```powershell
+# terminal 1
+.\.venv\Scripts\Activate.ps1
+uvicorn backend.api.main:app --reload --port 8000
+
+# terminal 2
+npm run dev
+```
+
+Electron development:
+
+```powershell
+npm run desktop:dev
+```
+
+Desktop packaging requires PyInstaller for the backend executable:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-desktop.txt
+
+# Windows installer + portable EXE
+npm run desktop:build:win
+
+# macOS DMG + zip (run this on macOS)
+npm run desktop:build:mac
+```
+
+Desktop builds are written to `release/`. On first desktop launch, Electron creates a user-editable `backend.env` from `desktop/backend.env.example`; it defaults to `LLM_PROVIDER=mock` so the app opens offline. Set `STORYPOINTER_EXTERNAL_API_URL` before launching Electron if you want the desktop shell to use an already-running API instead of starting its own local backend.
+
 ## Project workspace flow
 
 1. **Projects home** lists project cards; the **＋ New project** FAB opens a wizard (basics → repo → Jira → seed). Every step after the name is skippable. **Quick estimate** keeps the original form/Jira/spreadsheet flow, also available inside each project.
 2. **Seeding**: link a local checkout path and *Scan repo into C4* proposes L2 containers and L3 components from the code layout; *Import Jira issues* creates proposed L3 stories from the linked Jira project. Both are idempotent.
-3. **C4 canvas**: click a node to inspect, double-click to drill a level down, drag between nodes to draw a relation, drag nodes to arrange (positions persist). Add elements at the current level from the toolbar.
-4. **Inspector**: edit the description (the estimation evidence), then *Estimate* — the LangGraph pipeline streams live with the element's parent chain, relations, and code path injected as `c4_context`. *Refine* reuses the same checkpointed session. Accept or delete proposed elements, tag bugs, link or create Jira issues (created only when writes are enabled and confirmed).
-5. **Roll-up** shows initiative → epic → story → task with deterministic point sums, spike/split flags, and *Estimate all pending* for sequential batch estimation.
+3. **C4 canvas and inspector**: click any node to inspect it. Selecting an **L1 node keeps the canvas open** and adds an operating-plan summary to the sidebar alongside its description and Jira actions; choose **More details** to open that exact initiative's full L1 plan. Double-click L1-L3 nodes to drill into their children, drag between nodes to draw a relation, and drag nodes to persist their positions.
+4. **L1 plan — Requirements**: create multiple detailed Markdown documents for the selected initiative. Use Edit, Split, or Preview mode; insert or directly edit fenced Mermaid blocks; use the heading outline to navigate; and save each material change as a new immutable version with a change summary. Enter the contributor/reviewer name in **Working as** so edits and decisions are attributable.
+5. **Requirements review and export**: add comments against the current document version, approve/resolve/reopen each comment, submit a document for review, approve it, or revoke approval. Any later content edit creates a new version and returns the document to Draft. The Audit panel retains version, comment, and review events. Export a saved version to Word or PowerPoint; Mermaid is rendered into the Office file while its source remains in the versioned Markdown (and is included as editable definition text in Word).
+6. **L1 plan — Tribes & squads**: open it from an L1 sidebar's **More details** button or from the navigation rail, choose an initiative, then use the default **Hierarchy** view to define tribes with nested squads. Assign leads and missions, set FTE capacity and target velocity, and add people with roles, skills, location, allocation, and monthly loaded cost. Direct tribe members are optional and represent only tribe-level leadership or shared roles; delivery members belong inside squads. The header rolls up squad count, allocated FTE, people, and team run-rate.
+7. **L1 plan — Work & cost**: create dated work packages, assign a squad, optionally link the work to an L2-L4 C4 element, and track allocation, approved budget, actual cost, delivery status, at-risk count, and remaining budget. Select the reporting currency in the plan header.
+8. **L1 plan — Architecture**: create architecture or infrastructure views from Mermaid templates. Edit Mermaid source beside the live SVG preview, correct syntax errors before saving, keep multiple named diagrams, and export a rendered SVG.
+9. **Inspector and estimation**: edit an L2-L4 description (the estimation evidence), then *Estimate* — the LangGraph pipeline streams live with the element's parent chain, relations, and code path injected as `c4_context`. *Refine* reuses the same checkpointed session. Accept or delete proposed elements, tag bugs, and link or create Jira issues.
+10. **Roll-up** shows initiative → epic → story → task with deterministic point sums, spike/split flags, and *Estimate all pending* for sequential batch estimation.
+
+The audit actor is an application-level identity label because this repository does not provide authentication. Connect the actor field to your SSO/session identity before treating the audit record as identity-assured compliance evidence.
 
 ## Provider switches
 
@@ -190,6 +236,17 @@ After derivation, a 13 or High uncertainty takes the conditional spike/split bra
 | POST | `/projects/{id}/elements/{eid}/estimate` | Stream an estimate with `c4_context` evidence (L3/L4 only) |
 | POST | `/projects/{id}/elements/{eid}/artifact` | Link or create (gated) the mapped Jira issue |
 | GET | `/projects/{id}/rollup` | Deterministic initiative→epic→story roll-up with flags |
+| GET/PATCH | `/projects/{id}/l1/{eid}/plan` | Read the complete L1 operating plan / update reporting currency |
+| POST/PATCH/DELETE | `/projects/{id}/l1/{eid}/units`, `/projects/{id}/l1/units/{uid}` | Tribe and squad CRUD |
+| POST/PATCH/DELETE | `/projects/{id}/l1/units/{uid}/members`, `/projects/{id}/l1/members/{mid}` | Team-member CRUD |
+| POST/PATCH/DELETE | `/projects/{id}/l1/{eid}/work`, `/projects/{id}/l1/work/{wid}` | Costed work-package CRUD |
+| POST/PATCH/DELETE | `/projects/{id}/l1/{eid}/diagrams`, `/projects/{id}/l1/diagrams/{did}` | Editable Mermaid diagram CRUD |
+| GET/POST | `/projects/{id}/l1/{eid}/requirements` | List / create Markdown requirement documents |
+| GET/PATCH | `/projects/{id}/l1/requirements/{rid}` | Read document, versions, comments, and audit / save a conflict-checked new version |
+| GET | `/projects/{id}/l1/requirements/{rid}/versions/{version}` | Read an immutable historical version |
+| POST/PATCH | `/projects/{id}/l1/requirements/{rid}/comments`, `/projects/{id}/l1/requirements/comments/{cid}` | Add a version-linked comment / approve, resolve, or reopen it |
+| POST | `/projects/{id}/l1/requirements/{rid}/review` | Submit, approve, or revoke document approval |
+| POST | `/projects/{id}/l1/requirements/{rid}/export/{docx\|pptx}` | Generate an Office export with client-rendered Mermaid PNG data |
 
 Errors use `{ "error": { "code", "message", "details", "retryable" } }`. Streaming failures use the same fields in an `error` or `item_error` event.
 

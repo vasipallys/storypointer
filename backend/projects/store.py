@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from backend.projects.models import JiraLinkCreate, ProjectCreate, RepoLinkCreate
+from backend.projects.models import JiraLinkCreate, ProjectCreate, ProjectUpdate, RepoLinkCreate
 from backend.storage.db import connect, new_id, rows_to_dicts, utc_now
 
 
@@ -12,25 +13,61 @@ class NotFoundError(LookupError):
     pass
 
 
+def _hydrate_project(project: dict[str, Any]) -> dict[str, Any]:
+    """Parse the stored leads JSON string into a list for API responses."""
+    raw = project.get("leads")
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw) if raw else []
+        except json.JSONDecodeError:
+            parsed = []
+        project["leads"] = parsed if isinstance(parsed, list) else []
+    elif not isinstance(raw, list):
+        project["leads"] = []
+    return project
+
+
 def create_project(payload: ProjectCreate) -> dict[str, Any]:
     project = {
         "id": new_id(),
         "name": payload.name,
         "description": payload.description,
+        "leads": json.dumps([lead.model_dump() for lead in payload.leads]),
         "created_at": utc_now(),
     }
     with connect() as conn:
         conn.execute(
-            "INSERT INTO projects (id, name, description, created_at) VALUES (:id, :name, :description, :created_at)",
+            "INSERT INTO projects (id, name, description, leads, created_at) VALUES (:id, :name, :description, :leads, :created_at)",
             project,
         )
     return get_project(project["id"])
+
+
+def update_project(project_id: str, payload: ProjectUpdate) -> dict[str, Any]:
+    changes: dict[str, Any] = {}
+    if payload.name is not None:
+        changes["name"] = payload.name
+    if payload.description is not None:
+        changes["description"] = payload.description
+    if payload.leads is not None:
+        changes["leads"] = json.dumps([lead.model_dump() for lead in payload.leads])
+    with connect() as conn:
+        if conn.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone() is None:
+            raise NotFoundError(f"Project '{project_id}' was not found")
+        if changes:
+            assignments = ", ".join(f"{key} = :{key}" for key in changes)
+            conn.execute(
+                f"UPDATE projects SET {assignments} WHERE id = :id",
+                {**changes, "id": project_id},
+            )
+    return get_project(project_id)
 
 
 def list_projects() -> list[dict[str, Any]]:
     with connect() as conn:
         projects = rows_to_dicts(conn.execute("SELECT * FROM projects ORDER BY created_at DESC").fetchall())
         for project in projects:
+            _hydrate_project(project)
             project.update(_links(conn, project["id"]))
             counts = conn.execute(
                 """SELECT
@@ -51,7 +88,7 @@ def get_project(project_id: str) -> dict[str, Any]:
         row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
         if row is None:
             raise NotFoundError(f"Project '{project_id}' was not found")
-        project = dict(row)
+        project = _hydrate_project(dict(row))
         project.update(_links(conn, project_id))
     return project
 

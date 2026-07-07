@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from backend.projects import store
-from backend.projects.models import JiraLinkCreate, ProjectCreate, RepoLinkCreate
+from backend.projects.models import JiraLinkCreate, ProjectCreate, ProjectUpdate, RepoLinkCreate
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -32,6 +32,11 @@ async def list_projects() -> list[dict[str, Any]]:
 @router.get("/{project_id}")
 async def get_project(project_id: str) -> dict[str, Any]:
     return _or_404(lambda: store.get_project(project_id))
+
+
+@router.patch("/{project_id}")
+async def update_project(project_id: str, payload: ProjectUpdate) -> dict[str, Any]:
+    return _or_404(lambda: store.update_project(project_id, payload))
 
 
 @router.delete("/{project_id}")

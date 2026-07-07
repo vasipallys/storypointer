@@ -2,25 +2,98 @@
   "name": "story-pointer-v2",
   "private": true,
   "version": "1.0.0",
+  "description": "Evidence-led story-point estimation and L1 planning workspace.",
+  "author": "Story Pointer Contributors",
+  "main": "desktop/electron/main.cjs",
   "type": "module",
   "scripts": {
-    "dev": "vite --config frontend/vite.config.js",
-    "build": "vite build --config frontend/vite.config.js",
+    "dev": "npm run dev:web",
+    "dev:web": "vite --config frontend/vite.config.js",
+    "build": "npm run build:web",
+    "build:web": "vite build --config frontend/vite.config.js",
     "preview": "vite preview --config frontend/vite.config.js",
-    "test": "vitest run --config frontend/vite.config.js"
+    "test": "vitest run --config frontend/vite.config.js",
+    "electron:dev": "concurrently -k -n vite,electron -c cyan,magenta \"npm:dev:web\" \"wait-on http://127.0.0.1:5173 && cross-env ELECTRON_DEV_SERVER_URL=http://127.0.0.1:5173 electron desktop/electron/main.cjs\"",
+    "desktop:dev": "npm run electron:dev",
+    "desktop:icon": "node scripts/generate-desktop-icon.mjs",
+    "backend:bundle": "node scripts/build-backend-bundle.mjs",
+    "desktop:prepare": "npm run desktop:icon && npm run build:web && npm run backend:bundle",
+    "desktop:pack": "npm run desktop:prepare && electron-builder --dir",
+    "desktop:build": "npm run desktop:prepare && electron-builder",
+    "desktop:build:win": "npm run desktop:prepare && electron-builder --win nsis portable",
+    "desktop:build:mac": "npm run desktop:prepare && electron-builder --mac dmg zip"
   },
   "dependencies": {
     "@vitejs/plugin-react": "4.4.1",
     "@xyflow/react": "^12.11.1",
     "lucide-react": "0.511.0",
+    "mermaid": "^11.16.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "vite": "6.4.3"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "6.6.3",
     "@testing-library/react": "16.3.0",
+    "concurrently": "^10.0.3",
+    "cross-env": "^10.1.0",
+    "electron": "^43.0.0",
+    "electron-builder": "^26.15.3",
     "jsdom": "26.1.0",
-    "vitest": "3.2.6"
+    "sharp": "^0.35.3",
+    "vitest": "3.2.6",
+    "wait-on": "^9.0.10"
+  },
+  "build": {
+    "appId": "com.storypointer.app",
+    "productName": "Story Pointer",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "desktop/electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "desktop/backend-dist",
+        "to": "backend",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "desktop/backend.env.example",
+        "to": "backend.env.example"
+      }
+    ],
+    "mac": {
+      "icon": "desktop/assets/icon.png",
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "icon": "desktop/assets/icon.png",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "artifactName": "${productName}-${version}-${os}-${arch}-setup.${ext}",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-${os}-${arch}-portable.${ext}"
+    }
   }
 }

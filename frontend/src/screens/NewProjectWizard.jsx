@@ -1,6 +1,7 @@
 import { ArrowLeft, ArrowRight, Check } from 'lucide-react'
 import { Fragment, useState } from 'react'
 import { api } from '../api/client'
+import LeadsEditor from '../components/LeadsEditor'
 
 const STEPS = ['Basics', 'Code repo', 'Jira', 'Seed C4']
 
@@ -9,7 +10,7 @@ export default function NewProjectWizard({ config, onDone, onCancel }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [form, setForm] = useState({
-    name: '', description: '',
+    name: '', description: '', leads: [],
     repoMode: 'existing', repoUrl: '', repoPath: '',
     jiraInstance: '', jiraKey: '',
     seed: 'blank',
@@ -21,7 +22,10 @@ export default function NewProjectWizard({ config, onDone, onCancel }) {
   const finish = async () => {
     setBusy(true); setError(null)
     try {
-      const project = await api.createProject({ name: form.name.trim(), description: form.description.trim() })
+      const leads = form.leads
+        .map((lead) => ({ name: (lead.name || '').trim(), role: (lead.role || '').trim() }))
+        .filter((lead) => lead.name)
+      const project = await api.createProject({ name: form.name.trim(), description: form.description.trim(), leads })
       if (form.repoUrl.trim() || form.repoPath.trim()) {
         await api.addRepo(project.id, { url: form.repoUrl.trim(), local_path: form.repoPath.trim(), mode: form.repoMode })
       }
@@ -42,7 +46,7 @@ export default function NewProjectWizard({ config, onDone, onCancel }) {
 
   const canNext = step !== 0 || form.name.trim().length > 0
   return <div className="m3-stepper">
-    <div className="m3-page-title"><h1>New project</h1></div>
+    <div className="m3-page-title"><h1>New platform</h1></div>
     <div className="m3-steps">
       {STEPS.map((label, index) => <Fragment key={label}>
         <span className={`m3-step-dot ${index === step ? 'active' : index < step ? 'done' : ''}`}>
@@ -55,10 +59,12 @@ export default function NewProjectWizard({ config, onDone, onCancel }) {
     {error && <div className="m3-banner error">{String(error.message || error)}</div>}
     <div className="m3-card">
       {step === 0 && <>
-        <label className="m3-field"><span>Project name</span>
+        <label className="m3-field"><span>Platform name</span>
           <input value={form.name} onChange={set('name')} placeholder="Payments platform" autoFocus /></label>
         <label className="m3-field"><span>Description</span>
-          <textarea rows={3} value={form.description} onChange={set('description')} placeholder="What this system does and who uses it" /></label>
+          <textarea rows={3} value={form.description} onChange={set('description')} placeholder="What this platform does and who uses it" /></label>
+        <div className="m3-field"><span>Leads</span>
+          <LeadsEditor leads={form.leads} onChange={(leads) => setForm({ ...form, leads })} /></div>
       </>}
       {step === 1 && <>
         <div className="m3-radio-row">
@@ -92,7 +98,7 @@ export default function NewProjectWizard({ config, onDone, onCancel }) {
         <ArrowLeft size={16} /> {step === 0 ? 'Cancel' : 'Back'}</button>
       {step < STEPS.length - 1
         ? <button className="m3-btn filled" onClick={() => setStep(step + 1)} disabled={!canNext}>Next <ArrowRight size={16} /></button>
-        : <button className="m3-btn filled" onClick={finish} disabled={busy || !form.name.trim()}>{busy ? 'Creating…' : 'Create project'}</button>}
+        : <button className="m3-btn filled" onClick={finish} disabled={busy || !form.name.trim()}>{busy ? 'Creating…' : 'Create platform'}</button>}
     </div>
   </div>
 }

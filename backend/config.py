@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-ENV_FILE = Path(__file__).with_name(".env")
+ENV_FILE = Path(os.getenv("STORYPOINTER_ENV_FILE", Path(__file__).with_name(".env"))).expanduser()
 load_dotenv(ENV_FILE)
 
 
@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 3000
     jira_instances: str = ""
     jira_write_enabled: bool = False
-    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174"
 
     @property
     def llm(self) -> LLMSettings:

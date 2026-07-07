@@ -49,7 +49,7 @@ export default function App() {
           onDone={(id, notice) => setRoute({ name: 'project', id, notice })}
           onCancel={() => setRoute({ name: 'home' })} />}
         {route.name === 'quick' && <>
-          <div className="m3-page-title"><h1>Quick estimate</h1><p>One-off estimation without a project — form, Jira browse, or spreadsheet.</p></div>
+          <div className="m3-page-title"><h1>Quick estimate</h1><p>One-off estimation without a platform — form, Jira browse, or spreadsheet.</p></div>
           <QuickEstimate config={config} />
         </>}
       </div>}

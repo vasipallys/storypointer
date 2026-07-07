@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
+  leads TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS repo_links (
@@ -72,10 +73,122 @@ CREATE TABLE IF NOT EXISTS artifact_links (
   estimated_at TEXT,
   UNIQUE (element_id, artifact_type)
 );
+CREATE TABLE IF NOT EXISTS l1_agile_units (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  l1_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  unit_type TEXT NOT NULL CHECK (unit_type IN ('tribe','squad')),
+  parent_unit_id TEXT REFERENCES l1_agile_units(id) ON DELETE SET NULL,
+  name TEXT NOT NULL,
+  mission TEXT NOT NULL DEFAULT '',
+  lead_name TEXT NOT NULL DEFAULT '',
+  capacity_fte REAL NOT NULL DEFAULT 0 CHECK (capacity_fte >= 0),
+  target_velocity REAL NOT NULL DEFAULT 0 CHECK (target_velocity >= 0),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l1_plan_settings (
+  l1_element_id TEXT PRIMARY KEY REFERENCES c4_elements(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  currency_code TEXT NOT NULL DEFAULT 'USD',
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l1_team_members (
+  id TEXT PRIMARY KEY,
+  unit_id TEXT NOT NULL REFERENCES l1_agile_units(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT '',
+  skills TEXT NOT NULL DEFAULT '',
+  location TEXT NOT NULL DEFAULT '',
+  allocation_percent REAL NOT NULL DEFAULT 100 CHECK (allocation_percent >= 0 AND allocation_percent <= 100),
+  monthly_cost REAL NOT NULL DEFAULT 0 CHECK (monthly_cost >= 0),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l1_work_items (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  l1_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  squad_id TEXT REFERENCES l1_agile_units(id) ON DELETE SET NULL,
+  linked_element_id TEXT REFERENCES c4_elements(id) ON DELETE SET NULL,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  start_date TEXT NOT NULL,
+  end_date TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'planned' CHECK (status IN ('planned','in_progress','at_risk','done')),
+  allocation_percent REAL NOT NULL DEFAULT 100 CHECK (allocation_percent >= 0 AND allocation_percent <= 100),
+  budget_cost REAL NOT NULL DEFAULT 0 CHECK (budget_cost >= 0),
+  actual_cost REAL NOT NULL DEFAULT 0 CHECK (actual_cost >= 0),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l1_diagrams (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  l1_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  diagram_type TEXT NOT NULL CHECK (diagram_type IN ('architecture','infrastructure')),
+  title TEXT NOT NULL,
+  mermaid_source TEXT NOT NULL,
+  metadata TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l1_requirement_documents (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  l1_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','in_review','approved')),
+  version INTEGER NOT NULL DEFAULT 1,
+  created_by TEXT NOT NULL,
+  updated_by TEXT NOT NULL,
+  approved_by TEXT,
+  approved_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l1_requirement_versions (
+  id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL REFERENCES l1_requirement_documents(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  changed_by TEXT NOT NULL,
+  change_summary TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE (document_id, version)
+);
+CREATE TABLE IF NOT EXISTS l1_requirement_comments (
+  id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL REFERENCES l1_requirement_documents(id) ON DELETE CASCADE,
+  document_version INTEGER NOT NULL,
+  parent_comment_id TEXT REFERENCES l1_requirement_comments(id) ON DELETE SET NULL,
+  body TEXT NOT NULL,
+  author TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','approved','resolved')),
+  acted_by TEXT,
+  acted_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l1_requirement_audit (
+  id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL REFERENCES l1_requirement_documents(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  document_version INTEGER NOT NULL,
+  detail_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_elements_project ON c4_elements(project_id);
 CREATE INDEX IF NOT EXISTS idx_elements_parent ON c4_elements(parent_id);
 CREATE INDEX IF NOT EXISTS idx_relations_project ON c4_relations(project_id);
 CREATE INDEX IF NOT EXISTS idx_artifacts_element ON artifact_links(element_id);
+CREATE INDEX IF NOT EXISTS idx_l1_units_element ON l1_agile_units(l1_element_id);
+CREATE INDEX IF NOT EXISTS idx_l1_members_unit ON l1_team_members(unit_id);
+CREATE INDEX IF NOT EXISTS idx_l1_work_element ON l1_work_items(l1_element_id);
+CREATE INDEX IF NOT EXISTS idx_l1_diagrams_element ON l1_diagrams(l1_element_id);
+CREATE INDEX IF NOT EXISTS idx_l1_requirements_element ON l1_requirement_documents(l1_element_id);
+CREATE INDEX IF NOT EXISTS idx_l1_requirement_versions_doc ON l1_requirement_versions(document_id);
+CREATE INDEX IF NOT EXISTS idx_l1_requirement_comments_doc ON l1_requirement_comments(document_id);
+CREATE INDEX IF NOT EXISTS idx_l1_requirement_audit_doc ON l1_requirement_audit(document_id);
 """
 
 _initialized: set[str] = set()
@@ -92,12 +205,22 @@ def checkpoint_path() -> Path:
     return db_path().with_name("checkpoints.db")
 
 
+def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    """Add missing columns to an existing table (lightweight forward migration)."""
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    for name, definition in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+
 def init_db(path: Path | None = None) -> None:
     target = path or db_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(target) as conn:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(_SCHEMA)
+        _ensure_columns(conn, "l1_diagrams", {"metadata": "TEXT NOT NULL DEFAULT '{}'"})
+        _ensure_columns(conn, "projects", {"leads": "TEXT NOT NULL DEFAULT '[]'"})
     _initialized.add(str(target))
 
 
