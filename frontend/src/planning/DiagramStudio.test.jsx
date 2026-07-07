@@ -10,9 +10,9 @@ vi.mock('@xyflow/react', () => ({
   Handle: () => null,
   MarkerType: { ArrowClosed: 'arrowclosed' },
   Position: { Left: 'left', Right: 'right' },
-  ReactFlow: ({ nodes, edges, onEdgeClick, children }) => (
+  ReactFlow: ({ nodes, edges, onEdgeClick, onNodeClick, children }) => (
     <div data-testid="react-flow">
-      {nodes.map((node) => <div key={node.id}>{node.data.label}</div>)}
+      {nodes.map((node) => <button key={node.id} type="button" onClick={() => onNodeClick?.({}, node)} aria-label={`node-${node.id}`}>{node.data.label}</button>)}
       {edges.map((edge) => <button key={edge.id} type="button" onClick={() => onEdgeClick?.({}, edge)}>{edge.id}</button>)}
       {children}
     </div>
@@ -61,6 +61,37 @@ describe('DiagramStudio', () => {
 
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
       mermaid_source: expect.stringContaining('A -.-> B'),
+    }))
+  })
+
+  it('shows selected node shape controls in the toolbar and saves Mermaid v11 shape syntax', () => {
+    const onSave = vi.fn()
+    render(<DiagramStudio diagram={diagram} onClose={vi.fn()} onSave={onSave} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'node-A' }))
+    fireEvent.change(screen.getByLabelText('Selected node shape'), { target: { value: 'cloud' } })
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      mermaid_source: expect.stringContaining('A@{ shape: cloud, label: "A" }'),
+    }))
+  })
+
+  it('adds a labelled Mermaid node and links it from the selected node', () => {
+    const onSave = vi.fn()
+    render(<DiagramStudio diagram={diagram} onClose={vi.fn()} onSave={onSave} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'node-A' }))
+    fireEvent.change(screen.getByLabelText('New node label'), { target: { value: 'Worker service' } })
+    fireEvent.change(screen.getByLabelText('New node shape'), { target: { value: 'doc' } })
+    fireEvent.click(screen.getByRole('button', { name: /add linked node/i }))
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      mermaid_source: expect.stringContaining('node3@{ shape: doc, label: "Worker service" }'),
+    }))
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      mermaid_source: expect.stringContaining('A --> node3'),
     }))
   })
 

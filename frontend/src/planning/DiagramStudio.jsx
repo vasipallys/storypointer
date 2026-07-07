@@ -129,7 +129,12 @@ export default function DiagramStudio({ diagram, onClose, onSave, onAssist, savi
   const [model, setModel] = useState(initialModel)
   const [mode, setMode] = useState(initialModel.supported ? 'visual' : 'text')
   const [connector, setConnector] = useState('arrow')
-  const [selection, setSelection] = useState(null) // { kind:'node'|'edge', id }
+  const [newNodeLabel, setNewNodeLabel] = useState('New node')
+  const [newNodeShape, setNewNodeShape] = useState('rect')
+  const [connectTargetId, setConnectTargetId] = useState('')
+  const [selection, setSelection] = useState(() => (
+    initialModel.supported && initialModel.nodes[0] ? { kind: 'node', id: initialModel.nodes[0].id } : null
+  )) // { kind:'node'|'edge', id }
   const [rfNodes, setRfNodes] = useState([])
   const [rfEdges, setRfEdges] = useState([])
   const [previewError, setPreviewError] = useState(null)
@@ -192,7 +197,8 @@ export default function DiagramStudio({ diagram, onClose, onSave, onAssist, savi
     n: model.nodes.map((node) => [node.id, node.label, node.shape]),
     e: model.edges.map((edge) => [edge.id, edge.source, edge.target, edge.type, edge.label]),
     m: Object.keys(metadata.nodes).filter((id) => nodeHasMeta(metadata.nodes[id])),
-  }), [model, metadata.nodes])
+    s: selection ? `${selection.kind}:${selection.id}` : '',
+  }), [model, metadata.nodes, selection])
 
   useEffect(() => {
     if (!model.supported) { setRfNodes([]); setRfEdges([]); return }
@@ -200,6 +206,7 @@ export default function DiagramStudio({ diagram, onClose, onSave, onAssist, savi
     setRfNodes(model.nodes.map((node) => ({
       id: node.id,
       type: 'studio',
+      selected: selection?.kind === 'node' && selection.id === node.id,
       position: metadata.positions[node.id] || layout[node.id] || { x: 0, y: 0 },
       data: { label: node.label, shape: node.shape, hasMeta: nodeHasMeta(metadata.nodes[node.id]) },
     })))
@@ -232,10 +239,19 @@ export default function DiagramStudio({ diagram, onClose, onSave, onAssist, savi
 
   const addNode = useCallback(() => {
     const id = nextNodeId(model)
-    applyModel((current) => ({ ...current, nodes: [...current.nodes, { id, label: 'New node', shape: 'rect' }] }))
-    setMetadata((current) => ({ ...current, positions: { ...current.positions, [id]: { x: 60, y: 60 } } }))
+    const sourceId = selection?.kind === 'node' ? selection.id : null
+    const sourcePosition = sourceId ? rfNodes.find((node) => node.id === sourceId)?.position : null
+    const position = sourcePosition ? { x: Math.round(sourcePosition.x + 250), y: Math.round(sourcePosition.y) } : { x: 60, y: 60 }
+    const label = newNodeLabel.trim() || 'New node'
+    const edgeId = `e${Date.now().toString(36)}`
+    applyModel((current) => ({
+      ...current,
+      nodes: [...current.nodes, { id, label, shape: newNodeShape }],
+      edges: sourceId ? [...current.edges, { id: edgeId, source: sourceId, target: id, type: connector, label: '' }] : current.edges,
+    }))
+    setMetadata((current) => ({ ...current, positions: { ...current.positions, [id]: position } }))
     setSelection({ kind: 'node', id })
-  }, [applyModel, model])
+  }, [applyModel, connector, model, newNodeLabel, newNodeShape, rfNodes, selection])
 
   const updateNode = useCallback((id, patch) => {
     applyModel((current) => ({ ...current, nodes: current.nodes.map((node) => (node.id === id ? { ...node, ...patch } : node)) }))
@@ -293,10 +309,18 @@ export default function DiagramStudio({ diagram, onClose, onSave, onAssist, savi
   const selectedNode = selection?.kind === 'node' ? model.nodes.find((node) => node.id === selection.id) : null
   const selectedEdge = selection?.kind === 'edge' ? model.edges.find((edge) => edge.id === selection.id) : null
   const activeConnector = selectedEdge?.type || connector
+  const targetOptions = selectedNode ? model.nodes.filter((node) => node.id !== selectedNode.id) : []
+  const activeTargetId = targetOptions.some((node) => node.id === connectTargetId) ? connectTargetId : targetOptions[0]?.id || ''
   const nodeMeta = selectedNode ? (metadata.nodes[selectedNode.id] || { explanation: '', properties: [], links: [], documents: [] }) : null
   const changeConnector = (type) => {
     setConnector(type)
     if (selection?.kind === 'edge') updateEdge(selection.id, { type })
+  }
+  const connectSelectedNode = () => {
+    if (!selectedNode || !activeTargetId) return
+    const id = `e${Date.now().toString(36)}`
+    applyModel((current) => ({ ...current, edges: [...current.edges, { id, source: selectedNode.id, target: activeTargetId, type: connector, label: '' }] }))
+    setSelection({ kind: 'edge', id })
   }
 
   return (
@@ -321,13 +345,24 @@ export default function DiagramStudio({ diagram, onClose, onSave, onAssist, savi
         {mode === 'visual' && (
           <div className="ds-visual">
             <div className="ds-toolbar">
-              <button className="m3-btn tonal small" onClick={addNode}><Plus size={14} /> Add node</button>
+              <label className="ds-inline-field ds-node-label-field"><span>New node</span>
+                <input value={newNodeLabel} onChange={(event) => setNewNodeLabel(event.target.value)} aria-label="New node label" /></label>
+              <label className="ds-inline-field"><span>New shape</span>
+                <select value={newNodeShape} onChange={(event) => setNewNodeShape(event.target.value)} aria-label="New node shape">{NODE_SHAPES.map((shape) => <option key={shape.id} value={shape.id}>{shape.label}</option>)}</select></label>
+              <button className="m3-btn tonal small" onClick={addNode}><Plus size={14} /> {selectedNode ? 'Add linked node' : 'Add node'}</button>
               <label className="ds-inline-field"><span>Direction</span>
                 <select value={model.direction} onChange={(event) => changeDirection(event.target.value)}>{DIRECTIONS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+              {selectedNode && <label className="ds-inline-field ds-node-label-field"><span>Selected label</span>
+                <input value={selectedNode.label} onChange={(event) => updateNode(selectedNode.id, { label: event.target.value })} aria-label="Selected node label" /></label>}
+              {selectedNode && <label className="ds-inline-field"><span>Selected shape</span>
+                <select value={selectedNode.shape} onChange={(event) => updateNode(selectedNode.id, { shape: event.target.value })} aria-label="Selected node shape">{NODE_SHAPES.map((shape) => <option key={shape.id} value={shape.id}>{shape.label}</option>)}</select></label>}
               <label className="ds-inline-field"><span>{selectedEdge ? 'Selected connector' : 'New connector'}</span>
                 <select value={activeConnector} onChange={(event) => changeConnector(event.target.value)}>{EDGE_TYPES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select>
                 <span className={`ds-connector-preview type-${activeConnector}`} aria-hidden="true" />
               </label>
+              {selectedNode && targetOptions.length > 0 && <label className="ds-inline-field"><span>Connect to</span>
+                <select value={activeTargetId} onChange={(event) => setConnectTargetId(event.target.value)} aria-label="Connector target">{targetOptions.map((node) => <option key={node.id} value={node.id}>{node.label}</option>)}</select></label>}
+              {selectedNode && targetOptions.length > 0 && <button className="m3-btn outlined small" onClick={connectSelectedNode}>Connect</button>}
               <span className="ds-toolbar-hint">Drag between node edges to connect</span>
             </div>
             <div className="ds-canvas-row">

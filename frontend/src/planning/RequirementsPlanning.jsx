@@ -1,39 +1,25 @@
 import {
-  Bold,
   Check,
   CheckCircle2,
   ChevronRight,
-  Code,
   Code2,
-  Columns2,
   Download,
   FilePlus2,
   FileText,
-  Heading,
   History,
-  Image,
-  Italic,
-  Link2,
-  List,
-  ListChecks,
-  ListOrdered,
   MessageSquareText,
   Plus,
-  Quote,
   RotateCcw,
   Save,
   Send,
   Sparkles,
-  Strikethrough,
-  Table,
 } from 'lucide-react'
-import mermaid from 'mermaid'
-import { Children, isValidElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
 import DockablePanel from '../components/DockablePanel'
+import MarkdownEditor, { MERMAID_BLOCK_TEMPLATE, renderMermaidImages } from '../components/MarkdownEditor'
 import { DIAGRAM_TYPE_GROUPS } from './diagramCatalog'
+import DiagramStudio from './DiagramStudio'
 import PlanningDialog from './PlanningDialog'
 
 const STARTER = `# Executive summary
@@ -70,112 +56,12 @@ flowchart LR
 - Add assumptions, dependencies, constraints, and open decisions.
 `
 
-const DIAGRAM_TEMPLATE = `
-
-\`\`\`mermaid
-flowchart LR
-  User["User"] --> Experience["Experience"]
-  Experience --> Service["Business service"]
-  Service --> Outcome["Outcome"]
-\`\`\`
-`
-
 function DiagramTypeOptions() {
   return DIAGRAM_TYPE_GROUPS.map((group) => (
     <optgroup key={group.label} label={group.label}>
       {group.types.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
     </optgroup>
   ))
-}
-
-const TABLE_TEMPLATE = `| Column A | Column B |
-| --- | --- |
-| Value | Value |
-`
-
-mermaid.initialize({
-  startOnLoad: false,
-  securityLevel: 'strict',
-  theme: 'base',
-  themeVariables: {
-    primaryColor: '#d3e3fd',
-    primaryTextColor: '#1f1f1f',
-    primaryBorderColor: '#0b57d0',
-    lineColor: '#5f6368',
-    secondaryColor: '#e6f4ea',
-    tertiaryColor: '#fef7e0',
-    fontFamily: 'Roboto, sans-serif',
-  },
-})
-
-function MermaidArticleDiagram({ source }) {
-  const target = useRef(null)
-  const [mode, setMode] = useState('visual')
-  const [error, setError] = useState(null)
-
-  useEffect(() => {
-    if (mode !== 'visual') return undefined
-    let active = true
-    const render = async () => {
-      try {
-        const id = `requirement-mermaid-${Date.now()}-${Math.random().toString(16).slice(2)}`
-        const { svg, bindFunctions } = await mermaid.render(id, source)
-        if (!active || !target.current) return
-        target.current.innerHTML = svg
-        bindFunctions?.(target.current)
-        setError(null)
-      } catch (nextError) {
-        if (active) setError(nextError)
-      }
-    }
-    render()
-    return () => { active = false }
-  }, [source, mode])
-
-  return <section className="req-mermaid-card">
-    <header>
-      <span><Sparkles size={15} /> Mermaid diagram</span>
-      <div>
-        <button className={mode === 'visual' ? 'active' : ''} onClick={() => setMode('visual')}>Visual</button>
-        <button className={mode === 'source' ? 'active' : ''} onClick={() => setMode('source')}>Source</button>
-        <button aria-label="Copy Mermaid source" onClick={() => navigator.clipboard?.writeText(source)}><Code2 size={14} /></button>
-      </div>
-    </header>
-    {mode === 'source'
-      ? <pre><code>{source}</code></pre>
-      : error
-        ? <div className="req-mermaid-error"><strong>Diagram needs attention</strong><span>{String(error.message || error).split('\n')[0]}</span></div>
-        : <div ref={target} className="req-mermaid-visual" />}
-  </section>
-}
-
-function MarkdownViewer({ content }) {
-  const heading = (level) => function MarkdownHeading({ children }) {
-    const text = Children.toArray(children).join('')
-    const id = text.toLowerCase().replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '-')
-    const Tag = `h${level}`
-    return <Tag id={id}>{children}</Tag>
-  }
-  return <article className="req-markdown">
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      components={{
-        a: ({ children, ...props }) => <a {...props} target={props.href?.startsWith('#') ? undefined : '_blank'} rel="noreferrer">{children}</a>,
-        h1: heading(1),
-        h2: heading(2),
-        h3: heading(3),
-        h4: heading(4),
-        pre: ({ children }) => {
-          const child = Children.count(children) === 1 ? Children.only(children) : null
-          const language = isValidElement(child) ? /language-([\w-]+)/.exec(child.props.className || '')?.[1] : null
-          const source = isValidElement(child) ? String(child.props.children).replace(/\n$/, '') : ''
-          if (language === 'mermaid') return <MermaidArticleDiagram source={source} />
-          return <pre>{children}</pre>
-        },
-      }}>
-      {content || '*No requirement content yet.*'}
-    </ReactMarkdown>
-  </article>
 }
 
 function headingsFrom(content) {
@@ -201,48 +87,6 @@ function saveDownload({ blob, filename }) {
   anchor.download = filename
   anchor.click()
   URL.revokeObjectURL(url)
-}
-
-async function svgToPng(svg) {
-  const viewBox = /viewBox="[^"]*\s([\d.]+)\s([\d.]+)"/i.exec(svg)
-  const sourceWidth = Number(viewBox?.[1]) || 1000
-  const sourceHeight = Number(viewBox?.[2]) || 600
-  const width = Math.min(1800, Math.max(900, sourceWidth * 2))
-  const height = Math.min(1200, Math.max(500, width * sourceHeight / sourceWidth))
-  const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }))
-  try {
-    const image = await new Promise((resolve, reject) => {
-      const next = new Image()
-      next.onload = () => resolve(next)
-      next.onerror = reject
-      next.src = url
-    })
-    const canvas = document.createElement('canvas')
-    canvas.width = width
-    canvas.height = height
-    const context = canvas.getContext('2d')
-    context.fillStyle = '#ffffff'
-    context.fillRect(0, 0, width, height)
-    context.drawImage(image, 0, 0, width, height)
-    return canvas.toDataURL('image/png')
-  } finally {
-    URL.revokeObjectURL(url)
-  }
-}
-
-async function renderDiagramImages(markdown) {
-  const sources = [...markdown.matchAll(/```mermaid\s*\n([\s\S]*?)```/gi)].map((match) => match[1].trim())
-  const images = []
-  for (const source of sources) {
-    try {
-      const id = `requirement-export-${Date.now()}-${Math.random().toString(16).slice(2)}`
-      const { svg } = await mermaid.render(id, source)
-      images.push(await svgToPng(svg))
-    } catch {
-      images.push('')
-    }
-  }
-  return images
 }
 
 function AuditPanel({ document, actor, reload, setError, onOpenVersion }) {
@@ -320,8 +164,8 @@ export default function RequirementsPlanning({ projectId, l1Id, setError }) {
   const [mermaidPrompt, setMermaidPrompt] = useState('')
   const [mermaidType, setMermaidType] = useState('architecture')
   const [mermaidBusy, setMermaidBusy] = useState(false)
-  const textareaRef = useRef(null)
-  const pendingSelection = useRef(null)
+  const [markdownStudio, setMarkdownStudio] = useState(null)
+  const editorRef = useRef(null)
 
   const loadList = useCallback(async (preferredId) => {
     const next = await api.listRequirements(projectId, l1Id)
@@ -354,15 +198,6 @@ export default function RequirementsPlanning({ projectId, l1Id, setError }) {
 
   const dirty = !!(document && draft && (document.title !== draft.title || document.content !== draft.content))
   const headings = useMemo(() => headingsFrom(viewVersion?.content ?? draft?.content ?? ''), [draft?.content, viewVersion])
-
-  useLayoutEffect(() => {
-    const range = pendingSelection.current
-    const textarea = textareaRef.current
-    if (!range || !textarea) return
-    pendingSelection.current = null
-    textarea.focus()
-    textarea.setSelectionRange(range[0], range[1])
-  }, [draft?.content])
 
   const create = async () => {
     if (!newTitle.trim()) return
@@ -403,19 +238,14 @@ export default function RequirementsPlanning({ projectId, l1Id, setError }) {
   const exportAs = async (format) => {
     setBusy(true)
     try {
-      const diagramImages = await renderDiagramImages(document.content)
+      const diagramImages = await renderMermaidImages(document.content)
       saveDownload(await api.exportRequirement(projectId, document.id, format, { diagram_images: diagramImages }))
     }
     catch (error) { setError(error) } finally { setBusy(false) }
   }
   const insertDiagram = () => {
-    const textarea = textareaRef.current
-    const start = textarea?.selectionStart ?? draft.content.length
-    const end = textarea?.selectionEnd ?? start
-    const content = `${draft.content.slice(0, start)}${DIAGRAM_TEMPLATE}${draft.content.slice(end)}`
-    setDraft({ ...draft, content })
+    editorRef.current?.insertSnippet(MERMAID_BLOCK_TEMPLATE)
     setMode('split')
-    focusRange(start + DIAGRAM_TEMPLATE.length, start + DIAGRAM_TEMPLATE.length)
   }
   const insertSkeleton = () => { insertDiagram(); setMermaidDialog(null) }
   const generateMermaid = async () => {
@@ -423,66 +253,15 @@ export default function RequirementsPlanning({ projectId, l1Id, setError }) {
     setMermaidBusy(true)
     try {
       const reply = await api.assistDiagram(projectId, l1Id, { prompt: mermaidPrompt.trim(), current_source: '', diagram_type: mermaidType })
-      insertSnippet('```mermaid\n' + String(reply.mermaid || '').trim() + '\n```\n')
+      editorRef.current?.insertMermaidSource(reply.mermaid)
       setMermaidDialog(null); setMermaidPrompt('')
     } catch (error) { setError(error) } finally { setMermaidBusy(false) }
   }
-  // Restore the caret after a toolbar edit: rAF races React's commit for a
-  // controlled textarea, so stash the target range and reapply it in a layout
-  // effect once the new value is in the DOM.
-  const focusRange = (from, to) => { pendingSelection.current = [from, to] }
-  const wrapSelection = (before, after, placeholder) => {
-    const value = draft.content
-    const textarea = textareaRef.current
-    const start = textarea?.selectionStart ?? value.length
-    const end = textarea?.selectionEnd ?? start
-    const selected = value.slice(start, end) || placeholder
-    setDraft({ ...draft, content: value.slice(0, start) + before + selected + after + value.slice(end) })
-    focusRange(start + before.length, start + before.length + selected.length)
+  const saveMarkdownDiagram = (payload) => {
+    const replaced = editorRef.current?.replaceMermaidBlock(markdownStudio.index, payload.mermaid_source)
+    if (replaced) setMode('split')
+    setMarkdownStudio(null)
   }
-  const prefixSelectedLines = (transform) => {
-    const value = draft.content
-    const textarea = textareaRef.current
-    const start = textarea?.selectionStart ?? value.length
-    const end = textarea?.selectionEnd ?? start
-    const from = value.lastIndexOf('\n', start - 1) + 1
-    const nextBreak = value.indexOf('\n', end)
-    const to = nextBreak === -1 ? value.length : nextBreak
-    const updated = value.slice(from, to).split('\n').map(transform).join('\n')
-    setDraft({ ...draft, content: value.slice(0, from) + updated + value.slice(to) })
-    focusRange(from, from + updated.length)
-  }
-  const insertSnippet = (snippet) => {
-    const value = draft.content
-    const textarea = textareaRef.current
-    const start = textarea?.selectionStart ?? value.length
-    const end = textarea?.selectionEnd ?? start
-    const block = (start > 0 && value[start - 1] !== '\n' ? '\n' : '') + snippet
-    setDraft({ ...draft, content: value.slice(0, start) + block + value.slice(end) })
-    setMode((current) => (current === 'preview' ? 'split' : current))
-    focusRange(start + block.length, start + block.length)
-  }
-  const insertCode = () => {
-    const textarea = textareaRef.current
-    if (textarea && textarea.selectionStart !== textarea.selectionEnd) wrapSelection('`', '`', 'code')
-    else insertSnippet('```\ncode\n```\n')
-  }
-  const MD_TOOLS = [
-    { key: 'bold', label: 'Bold', icon: Bold, run: () => wrapSelection('**', '**', 'bold text') },
-    { key: 'italic', label: 'Italic', icon: Italic, run: () => wrapSelection('_', '_', 'italic text') },
-    { key: 'heading', label: 'Heading', icon: Heading, run: () => prefixSelectedLines((line) => `## ${line.replace(/^#{1,6}\s+/, '')}`) },
-    { key: 'strike', label: 'Strikethrough', icon: Strikethrough, run: () => wrapSelection('~~', '~~', 'strikethrough') },
-    { sep: true, key: 'sep1' },
-    { key: 'ul', label: 'Bulleted list', icon: List, run: () => prefixSelectedLines((line) => `- ${line.replace(/^[-*]\s+/, '')}`) },
-    { key: 'ol', label: 'Numbered list', icon: ListOrdered, run: () => prefixSelectedLines((line, index) => `${index + 1}. ${line.replace(/^\d+\.\s+/, '')}`) },
-    { key: 'task', label: 'Task list', icon: ListChecks, run: () => prefixSelectedLines((line) => `- [ ] ${line.replace(/^-\s*\[[ xX]\]\s*/, '').replace(/^[-*]\s+/, '')}`) },
-    { key: 'quote', label: 'Quote', icon: Quote, run: () => prefixSelectedLines((line) => `> ${line.replace(/^>\s?/, '')}`) },
-    { sep: true, key: 'sep2' },
-    { key: 'code', label: 'Code', icon: Code, run: insertCode },
-    { key: 'table', label: 'Table', icon: Table, run: () => insertSnippet(TABLE_TEMPLATE) },
-    { key: 'link', label: 'Link', icon: Link2, run: () => wrapSelection('[', '](https://)', 'link text') },
-    { key: 'image', label: 'Image', icon: Image, run: () => wrapSelection('![', '](https://)', 'alt text') },
-  ]
   const openVersion = async (version) => {
     try { setViewVersion(await api.getRequirementVersion(projectId, document.id, version)) }
     catch (error) { setError(error) }
@@ -517,12 +296,6 @@ export default function RequirementsPlanning({ projectId, l1Id, setError }) {
         {document && draft && <main className="req-editor-shell">
           <header className="req-editor-toolbar">
             <div className="req-title-field"><input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} aria-label="Requirement document title" /><span className={`req-status ${document.status}`}>{statusLabel(document.status)}</span><small>v{document.version}</small></div>
-            <div className="req-mode-toggle">
-              <button className={mode === 'edit' ? 'active' : ''} onClick={() => setMode('edit')}><Code2 size={14} /> Edit</button>
-              <button className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}><Columns2 size={14} /> Split</button>
-              <button className={mode === 'preview' ? 'active' : ''} onClick={() => setMode('preview')}><FileText size={14} /> Preview</button>
-            </div>
-            <button className="m3-btn text small" onClick={() => setMermaidDialog('choose')}><Sparkles size={14} /> Mermaid</button>
             <div className="req-export-menu">
               <button className="m3-btn text small" disabled={busy || dirty} onClick={() => exportAs('docx')}><Download size={14} /> Word</button>
               <button className="m3-btn text small" disabled={busy || dirty} onClick={() => exportAs('pptx')}><Download size={14} /> PPT</button>
@@ -530,18 +303,17 @@ export default function RequirementsPlanning({ projectId, l1Id, setError }) {
           </header>
 
           {viewVersion && <div className="req-version-banner"><History size={15} /> Viewing version {viewVersion.version} from {new Date(viewVersion.created_at).toLocaleString()}<button onClick={() => setViewVersion(null)}>Back to current</button><button onClick={() => { setDraft({ title: viewVersion.title, content: viewVersion.content }); setViewVersion(null) }}>Restore into editor</button></div>}
-          <div className={`req-content mode-${mode}`}>
-            {mode !== 'preview' && <div className="req-source-pane">
-              <header className="req-md-toolbar" onMouseDown={(event) => event.preventDefault()}>
-                {MD_TOOLS.map((tool) => tool.sep
-                  ? <span key={tool.key} className="req-md-sep" aria-hidden="true" />
-                  : <button key={tool.key} type="button" className="req-md-btn" onClick={tool.run} title={tool.label} aria-label={tool.label}><tool.icon size={15} /></button>)}
-                <button type="button" className="req-md-btn" onClick={() => setMermaidDialog('choose')} title="Insert Mermaid diagram" aria-label="Insert Mermaid diagram"><Sparkles size={15} /></button>
-                <span className="req-md-label">Markdown</span>
-              </header>
-              <textarea ref={textareaRef} spellCheck="true" value={draft.content} onChange={(event) => setDraft({ ...draft, content: event.target.value })} /></div>}
-            {mode !== 'edit' && <div className="req-reader-pane"><header>Document preview</header><MarkdownViewer content={viewVersion?.content ?? draft.content} /></div>}
-          </div>
+          <MarkdownEditor
+            ref={editorRef}
+            value={draft.content}
+            onChange={(content) => setDraft((current) => ({ ...current, content }))}
+            previewValue={viewVersion?.content ?? draft.content}
+            mode={mode}
+            onModeChange={setMode}
+            onInsertMermaid={() => setMermaidDialog('choose')}
+            onEditMermaid={viewVersion ? null : ({ index, source }) => setMarkdownStudio({ index, source })}
+            placeholder="Capture requirements, assumptions, decisions, and Mermaid diagrams..."
+          />
 
           <footer className="req-document-actions">
             <label><span>Change summary</span><input value={changeSummary} onChange={(event) => setChangeSummary(event.target.value)} placeholder="What changed in this version?" /></label>
@@ -598,5 +370,19 @@ export default function RequirementsPlanning({ projectId, l1Id, setError }) {
         <p className="req-dialog-note">The generated Mermaid block is inserted at your cursor. You can edit it afterwards or refine it in the diagram studio.</p>
       </>}
     </PlanningDialog>}
+
+    {markdownStudio && <DiagramStudio
+      key={`markdown-diagram-${markdownStudio.index}`}
+      diagram={{
+        id: `markdown-diagram-${markdownStudio.index}`,
+        title: 'Markdown diagram',
+        diagram_type: 'architecture',
+        mermaid_source: markdownStudio.source,
+        metadata: { nodes: {}, positions: {} },
+      }}
+      onSave={saveMarkdownDiagram}
+      onAssist={(payload) => api.assistDiagram(projectId, l1Id, payload)}
+      onClose={() => setMarkdownStudio(null)}
+    />}
   </section>
 }

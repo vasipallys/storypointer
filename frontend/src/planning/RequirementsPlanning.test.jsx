@@ -17,6 +17,22 @@ vi.mock('../api/client', () => ({
   },
 }))
 
+vi.mock('mermaid', () => ({
+  default: {
+    initialize: vi.fn(),
+    render: vi.fn().mockResolvedValue({ svg: '<svg viewBox="0 0 100 80"></svg>', bindFunctions: vi.fn() }),
+  },
+}))
+
+vi.mock('./DiagramStudio', () => ({
+  default: ({ diagram, onSave }) => (
+    <div role="dialog" aria-label="Diagram studio">
+      <span>{diagram.mermaid_source}</span>
+      <button type="button" onClick={() => onSave({ ...diagram, mermaid_source: 'flowchart LR\n  A --> C' })}>Apply studio changes</button>
+    </div>
+  ),
+}))
+
 beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
@@ -61,7 +77,7 @@ test('markdown toolbar wraps the selection and keeps it selected', async () => {
   const { container } = render(<RequirementsPlanning projectId="project-1" l1Id="l1-1" setError={vi.fn()} />)
 
   const textarea = await waitFor(() => {
-    const el = container.querySelector('.req-source-pane textarea')
+    const el = container.querySelector('.md-source-pane textarea')
     if (!el) throw new Error('editor not ready')
     return el
   })
@@ -71,6 +87,44 @@ test('markdown toolbar wraps the selection and keeps it selected', async () => {
 
   expect(textarea.value).toContain('**Authorize**')
   expect(textarea.value.slice(textarea.selectionStart, textarea.selectionEnd)).toBe('Authorize')
+})
+
+test('opens an embedded Mermaid block in Diagram Studio and writes it back to Markdown', async () => {
+  const summary = { id: 'req-1', title: 'Payments requirements', version: 1, status: 'draft', open_comments: 0 }
+  api.listRequirements.mockResolvedValue([summary])
+  api.getRequirement.mockResolvedValue({
+    ...summary,
+    project_id: 'project-1',
+    content: '# Flow\n\n```mermaid\nflowchart LR\n  A --> B\n```\n',
+    updated_at: '2026-07-06T08:00:00Z',
+    comments: [],
+    versions: [],
+    audit: [],
+  })
+  api.updateRequirement.mockResolvedValue({
+    ...summary,
+    project_id: 'project-1',
+    content: '# Flow\n\n```mermaid\nflowchart LR\n  A --> C\n```\n',
+    updated_at: '2026-07-06T08:05:00Z',
+    comments: [],
+    versions: [],
+    audit: [],
+  })
+
+  render(<RequirementsPlanning projectId="project-1" l1Id="l1-1" setError={vi.fn()} />)
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Edit in Diagram Studio' }))
+  expect(screen.getByRole('dialog', { name: 'Diagram studio' })).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Apply studio changes' }))
+  fireEvent.click(screen.getByRole('button', { name: /Save version/ }))
+
+  await waitFor(() => expect(api.updateRequirement).toHaveBeenCalledWith(
+    'project-1',
+    'req-1',
+    expect.objectContaining({
+      content: expect.stringContaining('A --> C'),
+    }),
+  ))
 })
 
 test('shows review state, comments, and audit-preserved versions', async () => {

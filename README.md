@@ -6,9 +6,9 @@ Around that estimator sits a **project workspace**: create a project, link a cod
 
 ## Architecture
 
-- **Frontend:** React 19, Vite, Material 3 shell, React Flow C4 canvas, `react-markdown`/GFM requirement documents, Mermaid rendering, and incremental SSE consumption.
+- **Frontend:** React 19, Vite, Material 3 shell, React Flow C4 canvas, `react-markdown`/GFM requirement documents, Mermaid 11 rendering, an editable diagram studio, and incremental SSE consumption.
 - **Backend:** FastAPI, Pydantic, LangChain chat-model abstraction, LangGraph `StateGraph` with a durable `AsyncSqliteSaver` checkpointer (falls back to `MemorySaver`).
-- **Persistence:** stdlib SQLite in `data/storypointer.db` for projects, C4 elements/relations, artifact links, L1 teams, costed work plans, Mermaid diagrams, versioned requirements, comments, approvals, and immutable audit events; `data/checkpoints.db` for LangGraph sessions. Override with `STORYPOINTER_DB`.
+- **Persistence:** stdlib SQLite in `data/storypointer.db` for projects, C4 elements/relations, artifact links, L1 teams, costed work plans, Mermaid diagrams, versioned requirements, comments, approvals, and immutable audit events; `data/checkpoints.db` for LangGraph sessions. Override with `STORYPOINTER_DB`. Existing diagram tables are migrated forward so newer Mermaid diagram categories can be stored without recreating the database.
 - **Jira:** direct `httpx` integration. Jira Cloud uses REST v3 with Basic auth; Server/Data Center uses REST v2 with Bearer PAT auth. Reads use the documented search resource, writes use `PUT /issue/{issueKey}` and `POST /issue`.
 - **Files:** pandas reads CSV/XLS/XLSX, `openpyxl` reads/writes XLSX, `xlrd` supports legacy XLS, and `python-docx`/`python-pptx` generate requirement exports with rendered Mermaid images.
 - **Calibration:** six fixed stories in `backend/anchors.py`; no embeddings, vector store, or retrieval.
@@ -110,15 +110,32 @@ Desktop builds are written to `release/`. On first desktop launch, Electron crea
 1. **Projects home** lists project cards; the **＋ New project** FAB opens a wizard (basics → repo → Jira → seed). Every step after the name is skippable. **Quick estimate** keeps the original form/Jira/spreadsheet flow, also available inside each project.
 2. **Seeding**: link a local checkout path and *Scan repo into C4* proposes L2 containers and L3 components from the code layout; *Import Jira issues* creates proposed L3 stories from the linked Jira project. Both are idempotent.
 3. **C4 canvas and inspector**: click any node to inspect it. Selecting an **L1 node keeps the canvas open** and adds an operating-plan summary to the sidebar alongside its description and Jira actions; choose **More details** to open that exact initiative's full L1 plan. Double-click L1-L3 nodes to drill into their children, drag between nodes to draw a relation, and drag nodes to persist their positions.
-4. **L1 plan — Requirements**: create multiple detailed Markdown documents for the selected initiative. Use Edit, Split, or Preview mode; insert or directly edit fenced Mermaid blocks; use the heading outline to navigate; and save each material change as a new immutable version with a change summary. Enter the contributor/reviewer name in **Working as** so edits and decisions are attributable.
+4. **L1 plan — Requirements**: create multiple detailed Markdown documents for the selected initiative. Use Edit, Split, or Preview mode; insert or directly edit fenced Mermaid blocks; generate Mermaid from the same expanded diagram catalog used by the studio; use the heading outline to navigate; and save each material change as a new immutable version with a change summary. Enter the contributor/reviewer name in **Working as** so edits and decisions are attributable.
 5. **Requirements review and export**: add comments against the current document version, approve/resolve/reopen each comment, submit a document for review, approve it, or revoke approval. Any later content edit creates a new version and returns the document to Draft. The Audit panel retains version, comment, and review events. Export a saved version to Word or PowerPoint; Mermaid is rendered into the Office file while its source remains in the versioned Markdown (and is included as editable definition text in Word).
 6. **L1 plan — Tribes & squads**: open it from an L1 sidebar's **More details** button or from the navigation rail, choose an initiative, then use the default **Hierarchy** view to define tribes with nested squads. Assign leads and missions, set FTE capacity and target velocity, and add people with roles, skills, location, allocation, and monthly loaded cost. Direct tribe members are optional and represent only tribe-level leadership or shared roles; delivery members belong inside squads. The header rolls up squad count, allocated FTE, people, and team run-rate.
 7. **L1 plan — Work & cost**: create dated work packages, assign a squad, optionally link the work to an L2-L4 C4 element, and track allocation, approved budget, actual cost, delivery status, at-risk count, and remaining budget. Select the reporting currency in the plan header.
-8. **L1 plan — Architecture**: create architecture or infrastructure views from Mermaid templates. Edit Mermaid source beside the live SVG preview, correct syntax errors before saving, keep multiple named diagrams, and export a rendered SVG.
+8. **L1 plan — Architecture**: create architecture, infrastructure, delivery, sequence, data-model, requirement, timeline, chart, and Mermaid 11 beta views from templates or AI prompts. Flowcharts can be edited visually with React Flow nodes, connectors, persisted positions, and per-node metadata; every other Mermaid type opens in safe text mode with a live SVG preview. Correct syntax errors before saving, keep multiple named diagrams, and export a rendered SVG.
 9. **Inspector and estimation**: edit an L2-L4 description (the estimation evidence), then *Estimate* — the LangGraph pipeline streams live with the element's parent chain, relations, and code path injected as `c4_context`. *Refine* reuses the same checkpointed session. Accept or delete proposed elements, tag bugs, and link or create Jira issues.
 10. **Roll-up** shows initiative → epic → story → task with deterministic point sums, spike/split flags, and *Estimate all pending* for sequential batch estimation.
 
 The audit actor is an application-level identity label because this repository does not provide authentication. Connect the actor field to your SSO/session identity before treating the audit record as identity-assured compliance evidence.
+
+Requirement documents use the shared production Markdown editor in `frontend/src/components/MarkdownEditor.jsx`. The editor provides Edit, Split, and Preview modes, a Material-style formatting toolbar, live Mermaid preview cards, source/copy controls, and an **Edit in Diagram Studio** bridge that writes visual Mermaid edits back into the original fenced Markdown block.
+
+## Mermaid Diagram Studio
+
+The L1 Architecture tab, the reusable Markdown editor, and the requirements Mermaid assistant share a single diagram catalog backed by Mermaid 11. The catalog includes:
+
+- **Workspace views:** architecture flowcharts and infrastructure flowcharts.
+- **Systems and delivery:** `architecture-beta`, `block-beta`, `kanban`, and `packet`.
+- **Classic Mermaid:** sequence, class, state, ER, requirement, C4 context, Gantt, journey, timeline, mindmap, quadrant, git graph, pie, XY chart, and sankey.
+- **Mermaid 11 charts:** radar, treemap, and venn.
+
+Flowcharts support a visual React Flow editing mode with draggable nodes, persisted positions, connector editing, labels, grouped subgraphs, and per-node annotations for explanations, custom properties, links, and documents. The visual editor understands Mermaid v11 object-shape syntax such as `Node@{ shape: doc, label: "API contract" }` and exposes additional node shapes including documents, cloud, card, datastore, display, manual input, delay, fork/join, junction, communication link, collate, extract, disk storage, direct storage, internal storage, and text blocks.
+
+Markdown documents render fenced `mermaid` blocks as live preview cards with source/copy controls and an **Edit in Diagram Studio** action. Saving from the studio writes the updated Mermaid source back into the original Markdown fence, so requirements, architecture notes, and exported documents stay portable and version-control friendly while still supporting visual drawing.
+
+Non-flowchart Mermaid diagrams are preserved and edited in text mode with the same live SVG preview and syntax-error guardrails. Saving a non-flowchart diagram never round-trips it through the flowchart model, so source for sequence, kanban, C4, chart, and beta diagrams stays intact. AI generation and assistant edits receive the selected diagram type, a matching starter header, and type-specific guidance; `LLM_PROVIDER=mock` returns deterministic starter diagrams for the expanded catalog.
 
 ## Provider switches
 
@@ -132,7 +149,7 @@ LLM_MODEL=mock
 LLM_API_KEY=
 ```
 
-Mock mode returns deterministic, schema-valid estimates derived from a hash of the story title (same story → same points; a 13 exercises the spike/split branch and split proposals). Every output is clearly labeled "Mock". Use it for demos, UI development, and trying the C4 workspace without a provider account or rate limits.
+Mock mode returns deterministic, schema-valid estimates derived from a hash of the story title (same story → same points; a 13 exercises the spike/split branch and split proposals). It also returns deterministic Mermaid assistant drafts for the expanded diagram catalog, so Diagram Studio demos work offline. Every output is clearly labeled "Mock". Use it for demos, UI development, and trying the C4 workspace without a provider account or rate limits.
 
 **Claude**
 
@@ -242,6 +259,8 @@ After derivation, a 13 or High uncertainty takes the conditional spike/split bra
 | POST/PATCH/DELETE | `/projects/{id}/l1/units/{uid}/members`, `/projects/{id}/l1/members/{mid}` | Team-member CRUD |
 | POST/PATCH/DELETE | `/projects/{id}/l1/{eid}/work`, `/projects/{id}/l1/work/{wid}` | Costed work-package CRUD |
 | POST/PATCH/DELETE | `/projects/{id}/l1/{eid}/diagrams`, `/projects/{id}/l1/diagrams/{did}` | Editable Mermaid diagram CRUD |
+| POST | `/projects/{id}/l1/{eid}/diagrams/generate` | Create a new typed Mermaid diagram from an AI prompt |
+| POST | `/projects/{id}/l1/{eid}/diagrams/assist` | Generate or edit typed Mermaid source for Diagram Studio or requirements documents |
 | GET/POST | `/projects/{id}/l1/{eid}/requirements` | List / create Markdown requirement documents |
 | GET/PATCH | `/projects/{id}/l1/requirements/{rid}` | Read document, versions, comments, and audit / save a conflict-checked new version |
 | GET | `/projects/{id}/l1/requirements/{rid}/versions/{version}` | Read an immutable historical version |
