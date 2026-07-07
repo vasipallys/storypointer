@@ -15,7 +15,35 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-_SCHEMA = """
+_DIAGRAM_TYPES = (
+    "architecture",
+    "infrastructure",
+    "architecture_beta",
+    "block",
+    "kanban",
+    "packet",
+    "sequence",
+    "class",
+    "state",
+    "er",
+    "requirement",
+    "c4",
+    "gantt",
+    "journey",
+    "timeline",
+    "mindmap",
+    "quadrant",
+    "gitgraph",
+    "pie",
+    "xychart",
+    "sankey",
+    "radar",
+    "treemap",
+    "venn",
+)
+_DIAGRAM_TYPE_CHECK = ", ".join(f"'{diagram_type}'" for diagram_type in _DIAGRAM_TYPES)
+
+_SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -123,10 +151,10 @@ CREATE TABLE IF NOT EXISTS l1_diagrams (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   l1_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
-  diagram_type TEXT NOT NULL CHECK (diagram_type IN ('architecture','infrastructure')),
+  diagram_type TEXT NOT NULL CHECK (diagram_type IN ({_DIAGRAM_TYPE_CHECK})),
   title TEXT NOT NULL,
   mermaid_source TEXT NOT NULL,
-  metadata TEXT NOT NULL DEFAULT '{}',
+  metadata TEXT NOT NULL DEFAULT '{{}}',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -174,7 +202,7 @@ CREATE TABLE IF NOT EXISTS l1_requirement_audit (
   event_type TEXT NOT NULL,
   actor TEXT NOT NULL,
   document_version INTEGER NOT NULL,
-  detail_json TEXT NOT NULL DEFAULT '{}',
+  detail_json TEXT NOT NULL DEFAULT '{{}}',
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_elements_project ON c4_elements(project_id);
@@ -213,6 +241,40 @@ def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
+def _ensure_l1_diagram_type_check(conn: sqlite3.Connection) -> None:
+    """Rebuild old l1_diagrams tables whose CHECK only allowed two diagram types."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'l1_diagrams'"
+    ).fetchone()
+    sql = row[0] if row else ""
+    if not sql or all(f"'{diagram_type}'" in sql for diagram_type in _DIAGRAM_TYPES):
+        return
+
+    conn.execute("DROP INDEX IF EXISTS idx_l1_diagrams_element")
+    conn.execute("ALTER TABLE l1_diagrams RENAME TO l1_diagrams_old")
+    conn.execute(
+        f"""CREATE TABLE l1_diagrams (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          l1_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+          diagram_type TEXT NOT NULL CHECK (diagram_type IN ({_DIAGRAM_TYPE_CHECK})),
+          title TEXT NOT NULL,
+          mermaid_source TEXT NOT NULL,
+          metadata TEXT NOT NULL DEFAULT '{{}}',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """INSERT INTO l1_diagrams
+           (id, project_id, l1_element_id, diagram_type, title, mermaid_source, metadata, created_at, updated_at)
+           SELECT id, project_id, l1_element_id, diagram_type, title, mermaid_source, metadata, created_at, updated_at
+           FROM l1_diagrams_old"""
+    )
+    conn.execute("DROP TABLE l1_diagrams_old")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_l1_diagrams_element ON l1_diagrams(l1_element_id)")
+
+
 def init_db(path: Path | None = None) -> None:
     target = path or db_path()
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -220,6 +282,7 @@ def init_db(path: Path | None = None) -> None:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(_SCHEMA)
         _ensure_columns(conn, "l1_diagrams", {"metadata": "TEXT NOT NULL DEFAULT '{}'"})
+        _ensure_l1_diagram_type_check(conn)
         _ensure_columns(conn, "projects", {"leads": "TEXT NOT NULL DEFAULT '[]'"})
     _initialized.add(str(target))
 

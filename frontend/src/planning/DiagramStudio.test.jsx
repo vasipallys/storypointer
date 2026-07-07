@@ -63,4 +63,25 @@ describe('DiagramStudio', () => {
       mermaid_source: expect.stringContaining('A -.-> B'),
     }))
   })
+
+  it('opens non-flowchart diagrams in text mode and preserves their source on save', () => {
+    const onSave = vi.fn()
+    const kanban = {
+      ...diagram,
+      title: 'Delivery board',
+      diagram_type: 'kanban',
+      mermaid_source: 'kanban\n  todo[Todo]\n    task1[Clarify scope]',
+    }
+    render(<DiagramStudio diagram={kanban} onClose={vi.fn()} onSave={onSave} />)
+
+    expect(screen.getByLabelText('Mermaid diagram source')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Diagram name'), { target: { value: 'Updated board' } })
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Updated board',
+      diagram_type: 'kanban',
+      mermaid_source: kanban.mermaid_source,
+    }))
+  })
 })

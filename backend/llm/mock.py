@@ -138,11 +138,149 @@ def _node_id(label: str, index: int) -> str:
     return f"{cleaned or 'node'}{index}"
 
 
+_MOCK_DIAGRAMS = {
+    "architecture_beta": "\n".join([
+        "architecture-beta",
+        "  group cloud(cloud)[Production cloud]",
+        "  service web(internet)[Web] in cloud",
+        "  service api(server)[API] in cloud",
+        "  service db(database)[Database] in cloud",
+        "  web:R --> L:api",
+        "  api:R --> L:db",
+    ]),
+    "block": "\n".join([
+        "block-beta",
+        "  columns 3",
+        "  web[\"Web\"] api[\"API\"] db[(\"DB\")]",
+        "  web --> api",
+        "  api --> db",
+    ]),
+    "packet": "\n".join([
+        "packet",
+        "  0-15: \"Source port\"",
+        "  16-31: \"Destination port\"",
+        "  32-63: \"Sequence number\"",
+    ]),
+    "class": "\n".join([
+        "classDiagram",
+        "  class Story",
+        "  class Estimator",
+        "  Story --> Estimator : analyzed by",
+    ]),
+    "state": "\n".join([
+        "stateDiagram-v2",
+        "  [*] --> Draft",
+        "  Draft --> InReview",
+        "  InReview --> Approved",
+    ]),
+    "er": "\n".join([
+        "erDiagram",
+        "  PROJECT ||--o{ STORY : contains",
+        "  STORY ||--o{ TASK : proposes",
+    ]),
+    "requirement": "\n".join([
+        "requirementDiagram",
+        "  performanceRequirement availability {",
+        "    id: NFR1",
+        "    text: \"99.9 percent availability\"",
+        "    risk: Medium",
+        "    verifymethod: Test",
+        "  }",
+        "  element platform {",
+        "    type: system",
+        "    docref: platform.md",
+        "  }",
+        "  platform - satisfies -> availability",
+    ]),
+    "c4": "\n".join([
+        "C4Context",
+        "  Person(user, \"User\")",
+        "  System(app, \"Story Pointer\")",
+        "  Rel(user, app, \"Estimates stories\")",
+    ]),
+    "gantt": "\n".join([
+        "gantt",
+        "  title Mock plan",
+        "  dateFormat YYYY-MM-DD",
+        "  section Delivery",
+        "  Build slice :2026-07-01, 5d",
+    ]),
+    "journey": "\n".join([
+        "journey",
+        "  title Mock journey",
+        "  section Use",
+        "    Submit story: 4: User",
+        "    Review estimate: 5: User",
+    ]),
+    "timeline": "\n".join([
+        "timeline",
+        "  title Mock timeline",
+        "  Discover : Scope",
+        "  Deliver : Build : Validate",
+    ]),
+    "mindmap": "\n".join([
+        "mindmap",
+        "  root((Initiative))",
+        "    Experience",
+        "    Platform",
+        "    Operations",
+    ]),
+    "quadrant": "\n".join([
+        "quadrantChart",
+        "  title Mock prioritization",
+        "  x-axis Low effort --> High effort",
+        "  y-axis Low value --> High value",
+        "  \"Core\": [0.35, 0.80]",
+    ]),
+    "gitgraph": "\n".join([
+        "gitGraph",
+        "  commit id: \"init\"",
+        "  branch feature",
+        "  checkout feature",
+        "  commit id: \"build\"",
+    ]),
+    "pie": "\n".join([
+        "pie showData",
+        "  title Mock effort",
+        "  \"Frontend\" : 35",
+        "  \"Backend\" : 45",
+        "  \"Testing\" : 20",
+    ]),
+    "xychart": "\n".join([
+        "xychart-beta",
+        "  title \"Mock velocity\"",
+        "  x-axis [Sprint 1, Sprint 2, Sprint 3]",
+        "  y-axis \"Points\" 0 --> 50",
+        "  line [20, 28, 34]",
+    ]),
+    "sankey": "\n".join([
+        "sankey-beta",
+        "  Discovery,Delivery,8",
+        "  Delivery,Testing,5",
+        "  Testing,Release,4",
+    ]),
+    "treemap": "\n".join([
+        "treemap-beta",
+        "  \"Initiative\"",
+        "    \"Experience\": 34",
+        "    \"Platform\": 21",
+    ]),
+    "venn": "\n".join([
+        "venn-beta",
+        "  set Frontend[\"Frontend\"]: 3",
+        "  set Backend[\"Backend\"]: 3",
+        "  union Frontend,Backend[\"API contracts\"]: 1",
+    ]),
+}
+
+
 def _build_diagram_ai(messages: list[Any]) -> BaseModel:
     """Deterministic offline diagram authoring for LLM_PROVIDER=mock."""
     from backend.planning.models import DiagramAIOutput
 
     text = " ".join(str(getattr(message, "content", message)) for message in messages)
+    type_match = re.search(r"DIAGRAM TYPE:\s*([A-Za-z0-9_]+)", text)
+    diagram_type = type_match.group(1) if type_match else "architecture"
     instruction = ""
     match = re.search(r"INSTRUCTION:\s*(.+)", text)
     if match:
@@ -152,7 +290,10 @@ def _build_diagram_ai(messages: list[Any]) -> BaseModel:
     if block and block.group(1).strip():
         current = block.group(1).strip()
 
-    if current:
+    if current and not re.match(r"^(flowchart|graph)\b", current.strip(), re.IGNORECASE):
+        mermaid = current
+        message = "Mock mode: kept the current non-flowchart diagram for text editing."
+    elif current:
         label = _keywords(instruction, 1)[0]
         node = f"{_node_id(label, 0)}x"
         lines = [current.rstrip(), f'  {node}["{label}"]']
@@ -161,6 +302,41 @@ def _build_diagram_ai(messages: list[Any]) -> BaseModel:
             lines.append(f"  {anchor.group(1)} --> {node}")
         mermaid = "\n".join(lines)
         message = f"Mock mode: added '{label}' to the diagram."
+    elif diagram_type == "sequence":
+        mermaid = "\n".join([
+            "sequenceDiagram",
+            "  actor User",
+            "  participant Web",
+            "  participant API",
+            "  User->>Web: Request estimate",
+            "  Web->>API: Stream story",
+            "  API-->>Web: Points and reasoning",
+        ])
+        message = "Mock mode: drafted a sequence diagram from your prompt."
+    elif diagram_type in _MOCK_DIAGRAMS:
+        mermaid = _MOCK_DIAGRAMS[diagram_type]
+        message = f"Mock mode: drafted a {diagram_type.replace('_', ' ')} diagram from your prompt."
+    elif diagram_type == "kanban":
+        mermaid = "\n".join([
+            "kanban",
+            "  backlog[Backlog]",
+            "    task1[Clarify scope]@{ priority: 'High', assigned: 'Team' }",
+            "  delivery[In delivery]",
+            "    task2[Build slice]",
+            "  done[Done]",
+            "    task3[Seed sample data]",
+        ])
+        message = "Mock mode: drafted a kanban diagram from your prompt."
+    elif diagram_type == "radar":
+        mermaid = "\n".join([
+            "radar-beta",
+            "  title Mock readiness",
+            "  axis Security, Scale, Delivery, Cost",
+            "  curve Current{70, 60, 65, 55}",
+            "  curve Target{90, 85, 80, 75}",
+            "  max 100",
+        ])
+        message = "Mock mode: drafted a radar diagram from your prompt."
     else:
         labels = _keywords(instruction)
         ids = [_node_id(label, index) for index, label in enumerate(labels)]

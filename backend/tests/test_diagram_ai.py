@@ -34,11 +34,24 @@ def test_sanitize_keeps_an_existing_header():
     assert text.splitlines()[0] == "flowchart TB"
 
 
+def test_sanitize_uses_default_header_for_new_diagram_types():
+    text = diagram_ai._sanitize_mermaid("  todo[Todo]\n    task[Clarify scope]", "kanban")
+    assert text.splitlines()[0] == "kanban"
+
+
 @pytest.mark.asyncio
 async def test_generate_from_prompt_offline(mock_llm):
     result = await diagram_ai.assist_diagram(prompt="Payment service talks to a ledger and a fraud engine")
     assert result["mermaid"].startswith("flowchart")
     assert "-->" in result["mermaid"]
+    assert result["message"]
+
+
+@pytest.mark.asyncio
+async def test_generate_new_mermaid_type_offline(mock_llm):
+    result = await diagram_ai.assist_diagram(prompt="Show delivery stages", diagram_type="kanban")
+    assert result["mermaid"].startswith("kanban")
+    assert "backlog" in result["mermaid"]
     assert result["message"]
 
 

@@ -1,31 +1,20 @@
-import { Blocks, Download, FileCode2, PencilRuler, Plus, Save, ServerCog, Sparkles, Trash2 } from 'lucide-react'
+import { Blocks, Download, FileCode2, PencilRuler, Plus, Save, Sparkles, Trash2 } from 'lucide-react'
 import mermaid from 'mermaid'
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import DockablePanel from '../components/DockablePanel'
+import { DEFAULT_DIAGRAM_TYPE, DIAGRAM_TYPE_GROUPS, diagramTypeLabel, getDiagramType } from './diagramCatalog'
 import DiagramStudio from './DiagramStudio'
 import PlanningDialog from './PlanningDialog'
 
 mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'base', themeVariables: { primaryColor: '#d3e3fd', primaryTextColor: '#1f1f1f', primaryBorderColor: '#0b57d0', lineColor: '#5f6368', secondaryColor: '#e6f4ea', tertiaryColor: '#fef7e0', fontFamily: 'Roboto, sans-serif' } })
 
-const TEMPLATES = {
-  architecture: `flowchart LR
-    Web["Web application"] --> API["Experience API"]
-    API --> Domain["Domain services"]
-    Domain --> Data[("Operational data")]
-    Domain -. events .-> Bus{{"Event bus"}}
-    Bus --> Analytics["Analytics platform"]`,
-  infrastructure: `flowchart TB
-    User(("User")) --> Edge["CDN / WAF"]
-    Edge --> LB["Load balancer"]
-    subgraph cloud["Production cloud"]
-      LB --> App1["App instance A"]
-      LB --> App2["App instance B"]
-      App1 --> DB[("Managed database")]
-      App2 --> DB
-      App1 --> Cache[("Cache")]
-      App2 --> Cache
-    end`,
+function DiagramTypeOptions() {
+  return DIAGRAM_TYPE_GROUPS.map((group) => (
+    <optgroup key={group.label} label={group.label}>
+      {group.types.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
+    </optgroup>
+  ))
 }
 
 function MermaidPreview({ source, onError, svgRef }) {
@@ -61,7 +50,8 @@ export default function ArchitecturePlanning({ projectId, l1Id, plan, refresh, s
   const [savingStudio, setSavingStudio] = useState(false)
   const [promptOpen, setPromptOpen] = useState(false)
   const [promptText, setPromptText] = useState('')
-  const [promptType, setPromptType] = useState('architecture')
+  const [promptType, setPromptType] = useState(DEFAULT_DIAGRAM_TYPE)
+  const [newType, setNewType] = useState(DEFAULT_DIAGRAM_TYPE)
   const [generating, setGenerating] = useState(false)
   const svgRef = useRef('')
 
@@ -75,9 +65,10 @@ export default function ArchitecturePlanning({ projectId, l1Id, plan, refresh, s
 
   const choose = (diagram) => { setSelectedId(diagram.id); setPreviewError(null) }
   const create = async (type) => {
+    const diagramType = getDiagramType(type)
     setBusy(true)
     try {
-      const created = await api.createDiagram(projectId, l1Id, { diagram_type: type, title: type === 'architecture' ? 'Solution architecture' : 'Infrastructure topology', mermaid_source: TEMPLATES[type] })
+      const created = await api.createDiagram(projectId, l1Id, { diagram_type: diagramType.id, title: diagramType.title, mermaid_source: diagramType.template })
       await refresh(); setSelectedId(created.id)
     } catch (error) { setError(error) } finally { setBusy(false) }
   }
@@ -122,25 +113,25 @@ export default function ArchitecturePlanning({ projectId, l1Id, plan, refresh, s
     <div className="l1-section-heading">
       <div><h2>Architecture & infrastructure</h2><p>Edit Mermaid source and see the system view update live. Diagrams remain portable, reviewable, and version-control friendly.</p></div>
       <div className="l1-heading-actions">
-        <button className="m3-btn tonal small" disabled={busy} onClick={() => { setPromptType('architecture'); setPromptOpen(true) }}><Sparkles size={15} /> Generate with AI</button>
-        <button className="m3-btn outlined small" disabled={busy} onClick={() => create('infrastructure')}><ServerCog size={15} /> Infrastructure</button>
-        <button className="m3-btn filled small" disabled={busy} onClick={() => create('architecture')}><Plus size={15} /> Architecture</button>
+        <label className="l1-template-picker"><span>Template</span><select value={newType} onChange={(event) => setNewType(event.target.value)}><DiagramTypeOptions /></select></label>
+        <button className="m3-btn tonal small" disabled={busy} onClick={() => { setPromptType(newType); setPromptOpen(true) }}><Sparkles size={15} /> Generate with AI</button>
+        <button className="m3-btn filled small" disabled={busy} onClick={() => create(newType)}><Plus size={15} /> New view</button>
       </div>
     </div>
 
     {plan.diagrams.length === 0
-      ? <div className="l1-empty-panel"><Blocks size={32} /><h3>Create a living technical view</h3><p>Describe the system in plain language and let AI draft it, or start from a Mermaid template — then edit the source and visual view live.</p><div className="l1-heading-actions"><button className="m3-btn tonal" onClick={() => { setPromptType('architecture'); setPromptOpen(true) }}><Sparkles size={16} /> Generate with AI</button><button className="m3-btn outlined" onClick={() => create('infrastructure')}><ServerCog size={16} /> Infrastructure</button><button className="m3-btn filled" onClick={() => create('architecture')}><Plus size={16} /> Architecture</button></div></div>
+      ? <div className="l1-empty-panel"><Blocks size={32} /><h3>Create a living technical view</h3><p>Describe the system in plain language and let AI draft it, or start from a Mermaid template - then edit the source and visual view live.</p><div className="l1-heading-actions"><label className="l1-template-picker"><span>Template</span><select value={newType} onChange={(event) => setNewType(event.target.value)}><DiagramTypeOptions /></select></label><button className="m3-btn tonal" onClick={() => { setPromptType(newType); setPromptOpen(true) }}><Sparkles size={16} /> Generate with AI</button><button className="m3-btn filled" onClick={() => create(newType)}><Plus size={16} /> New view</button></div></div>
       : <div className="l1-diagram-layout">
         <DockablePanel id="l1-diagram-list" side="left" title="Saved views" defaultWidth={220} minWidth={170} maxWidth={360}>
           <aside className="l1-diagram-list">
             <span className="l1-eyebrow">Saved views</span>
-            {plan.diagrams.map((diagram) => <button key={diagram.id} className={selected?.id === diagram.id ? 'active' : ''} onClick={() => choose(diagram)}><span className={`l1-unit-mark ${diagram.diagram_type}`}><FileCode2 size={16} /></span><span><strong>{diagram.title}</strong><small>{diagram.diagram_type} · {new Date(diagram.updated_at).toLocaleDateString()}</small></span></button>)}
+            {plan.diagrams.map((diagram) => <button key={diagram.id} className={selected?.id === diagram.id ? 'active' : ''} onClick={() => choose(diagram)}><span className={`l1-unit-mark ${diagram.diagram_type}`}><FileCode2 size={16} /></span><span><strong>{diagram.title}</strong><small>{diagramTypeLabel(diagram.diagram_type)} · {new Date(diagram.updated_at).toLocaleDateString()}</small></span></button>)}
           </aside>
         </DockablePanel>
         {draft && <div className="l1-diagram-studio">
           <header className="l1-studio-toolbar">
             <label><span>Diagram name</span><input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></label>
-            <label><span>View</span><select value={draft.diagram_type} onChange={(event) => setDraft({ ...draft, diagram_type: event.target.value })}><option value="architecture">Architecture</option><option value="infrastructure">Infrastructure</option></select></label>
+            <label><span>View</span><select value={draft.diagram_type} onChange={(event) => setDraft({ ...draft, diagram_type: event.target.value })}><DiagramTypeOptions /></select></label>
             <span className="l1-save-state">{dirty ? 'Unsaved changes' : 'Saved'}</span>
             <button className="m3-btn tonal small" onClick={() => setStudioOpen(true)}><PencilRuler size={15} /> Open studio</button>
             <button className="m3-btn text small" onClick={downloadSvg} disabled={!!previewError}><Download size={15} /> SVG</button>
@@ -166,13 +157,12 @@ export default function ArchitecturePlanning({ projectId, l1Id, plan, refresh, s
       </>}>
       <label className="m3-field"><span>View</span>
         <select value={promptType} onChange={(event) => setPromptType(event.target.value)}>
-          <option value="architecture">Architecture</option>
-          <option value="infrastructure">Infrastructure</option>
+          <DiagramTypeOptions />
         </select></label>
       <label className="m3-field"><span>Describe the system or requirement</span>
         <textarea autoFocus rows={5} value={promptText} onChange={(event) => setPromptText(event.target.value)}
           placeholder="e.g. A React web app calls an experience API, which uses domain services backed by PostgreSQL and publishes events to Kafka for an analytics platform." /></label>
-      <p className="req-dialog-note">The assistant drafts an editable Mermaid flowchart. You can refine it in the studio — by text, visually, or by chatting.</p>
+      <p className="req-dialog-note">The assistant drafts editable Mermaid for the selected view. You can refine flowcharts visually, and every type remains editable as text.</p>
     </PlanningDialog>}
   </section>
 }

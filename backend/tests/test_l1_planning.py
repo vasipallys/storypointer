@@ -162,6 +162,23 @@ def test_diagram_metadata_round_trips_through_create_update_and_plan():
     assert updated["mermaid_source"] == "flowchart LR\n  Web --> API"
 
 
+def test_new_mermaid_diagram_types_are_persisted():
+    project_id, initiative, _ = make_scope()
+    created = store.create_diagram(
+        project_id,
+        initiative["id"],
+        DiagramCreate(
+            diagram_type="kanban",
+            title="Delivery board",
+            mermaid_source="kanban\n  todo[Todo]\n    task1[Clarify scope]",
+        ),
+    )
+
+    plan = store.get_plan(project_id, initiative["id"])
+    assert created["diagram_type"] == "kanban"
+    assert plan["diagrams"][0]["diagram_type"] == "kanban"
+
+
 def test_plan_rejects_cross_initiative_assignments_and_bad_dates():
     project_id, initiative, _ = make_scope()
     other = c4_store.create_element(project_id, C4ElementCreate(level="L1", name="Operations"))

@@ -33,6 +33,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api } from '../api/client'
 import DockablePanel from '../components/DockablePanel'
+import { DIAGRAM_TYPE_GROUPS } from './diagramCatalog'
 import PlanningDialog from './PlanningDialog'
 
 const STARTER = `# Executive summary
@@ -78,6 +79,14 @@ flowchart LR
   Service --> Outcome["Outcome"]
 \`\`\`
 `
+
+function DiagramTypeOptions() {
+  return DIAGRAM_TYPE_GROUPS.map((group) => (
+    <optgroup key={group.label} label={group.label}>
+      {group.types.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
+    </optgroup>
+  ))
+}
 
 const TABLE_TEMPLATE = `| Column A | Column B |
 | --- | --- |
@@ -581,8 +590,7 @@ export default function RequirementsPlanning({ projectId, l1Id, setError }) {
       {mermaidDialog === 'ai' && <>
         <label className="m3-field"><span>Diagram style</span>
           <select value={mermaidType} onChange={(event) => setMermaidType(event.target.value)}>
-            <option value="architecture">Architecture / flow</option>
-            <option value="infrastructure">Infrastructure</option>
+            <DiagramTypeOptions />
           </select></label>
         <label className="m3-field"><span>Describe the diagram</span>
           <textarea autoFocus rows={5} value={mermaidPrompt} onChange={(event) => setMermaidPrompt(event.target.value)}

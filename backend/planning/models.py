@@ -7,6 +7,60 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+DIAGRAM_TYPES = (
+    "architecture",
+    "infrastructure",
+    "architecture_beta",
+    "block",
+    "kanban",
+    "packet",
+    "sequence",
+    "class",
+    "state",
+    "er",
+    "requirement",
+    "c4",
+    "gantt",
+    "journey",
+    "timeline",
+    "mindmap",
+    "quadrant",
+    "gitgraph",
+    "pie",
+    "xychart",
+    "sankey",
+    "radar",
+    "treemap",
+    "venn",
+)
+
+DiagramType = Literal[
+    "architecture",
+    "infrastructure",
+    "architecture_beta",
+    "block",
+    "kanban",
+    "packet",
+    "sequence",
+    "class",
+    "state",
+    "er",
+    "requirement",
+    "c4",
+    "gantt",
+    "journey",
+    "timeline",
+    "mindmap",
+    "quadrant",
+    "gitgraph",
+    "pie",
+    "xychart",
+    "sankey",
+    "radar",
+    "treemap",
+    "venn",
+]
+
 
 class AgileUnitCreate(BaseModel):
     unit_type: Literal["tribe", "squad"]
@@ -82,7 +136,7 @@ class WorkItemUpdate(BaseModel):
 
 
 class DiagramCreate(BaseModel):
-    diagram_type: Literal["architecture", "infrastructure"]
+    diagram_type: DiagramType
     title: str = Field(min_length=1, max_length=200)
     mermaid_source: str = Field(min_length=1, max_length=50000)
     # Per-node annotations (explanation, custom properties, links, documents).
@@ -91,7 +145,7 @@ class DiagramCreate(BaseModel):
 
 
 class DiagramUpdate(BaseModel):
-    diagram_type: Literal["architecture", "infrastructure"] | None = None
+    diagram_type: DiagramType | None = None
     title: str | None = Field(default=None, min_length=1, max_length=200)
     mermaid_source: str | None = Field(default=None, min_length=1, max_length=50000)
     metadata: dict[str, Any] | None = None
@@ -105,7 +159,7 @@ class DiagramChatTurn(BaseModel):
 class DiagramGenerateRequest(BaseModel):
     """Create a brand-new diagram from a natural-language requirement."""
     prompt: str = Field(min_length=1, max_length=4000)
-    diagram_type: Literal["architecture", "infrastructure"] = "architecture"
+    diagram_type: DiagramType = "architecture"
     title: str | None = Field(default=None, max_length=200)
 
 
@@ -113,7 +167,7 @@ class DiagramAssistRequest(BaseModel):
     """Ask the assistant to modify the diagram the user is currently editing."""
     prompt: str = Field(min_length=1, max_length=4000)
     current_source: str = Field(default="", max_length=50000)
-    diagram_type: Literal["architecture", "infrastructure"] = "architecture"
+    diagram_type: DiagramType = "architecture"
     history: list[DiagramChatTurn] = Field(default_factory=list, max_length=20)
 
 

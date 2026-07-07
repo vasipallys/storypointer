@@ -10,15 +10,34 @@
 // text-only editing without destroying the source.
 
 export const NODE_SHAPES = [
-  { id: 'rect', label: 'Rectangle', open: '[', close: ']' },
-  { id: 'round', label: 'Rounded', open: '(', close: ')' },
-  { id: 'stadium', label: 'Stadium', open: '([', close: '])' },
-  { id: 'subroutine', label: 'Subroutine', open: '[[', close: ']]' },
-  { id: 'cylinder', label: 'Database', open: '[(', close: ')]' },
-  { id: 'circle', label: 'Circle', open: '((', close: '))' },
-  { id: 'diamond', label: 'Decision', open: '{', close: '}' },
-  { id: 'hexagon', label: 'Hexagon', open: '{{', close: '}}' },
-  { id: 'parallelogram', label: 'Data', open: '[/', close: '/]' },
+  { id: 'rect', label: 'Process', open: '[', close: ']', mermaidShape: 'rect', aliases: ['rectangle', 'process', 'proc'] },
+  { id: 'round', label: 'Event', open: '(', close: ')', mermaidShape: 'rounded', aliases: ['event', 'rounded'] },
+  { id: 'stadium', label: 'Terminal', open: '([', close: '])', mermaidShape: 'stadium', aliases: ['pill', 'terminal'] },
+  { id: 'subroutine', label: 'Subprocess', open: '[[', close: ']]', mermaidShape: 'fr-rect', aliases: ['framed-rectangle', 'subproc', 'subprocess'] },
+  { id: 'cylinder', label: 'Database', open: '[(', close: ')]', mermaidShape: 'cyl', aliases: ['database', 'db'] },
+  { id: 'circle', label: 'Start', open: '((', close: '))', mermaidShape: 'circle', aliases: ['circ'] },
+  { id: 'diamond', label: 'Decision', open: '{', close: '}', mermaidShape: 'diam', aliases: ['decision', 'question'] },
+  { id: 'hexagon', label: 'Prepare', open: '{{', close: '}}', mermaidShape: 'hex', aliases: ['prepare'] },
+  { id: 'parallelogram', label: 'Input / output', open: '[/', close: '/]', mermaidShape: 'lean-r', aliases: ['in-out', 'lean-right'] },
+  { id: 'doc', label: 'Document', mermaidShape: 'doc', aliases: ['document'] },
+  { id: 'docs', label: 'Documents', mermaidShape: 'docs', aliases: ['documents', 'stacked-document', 'st-doc'] },
+  { id: 'cloud', label: 'Cloud', mermaidShape: 'cloud', aliases: ['cloud'] },
+  { id: 'card', label: 'Card', mermaidShape: 'notch-rect', aliases: ['card', 'notched-rectangle'] },
+  { id: 'datastore', label: 'Data store', mermaidShape: 'datastore', aliases: ['data-store'] },
+  { id: 'display', label: 'Display', mermaidShape: 'curv-trap', aliases: ['display', 'curved-trapezoid'] },
+  { id: 'manual-input', label: 'Manual input', mermaidShape: 'sl-rect', aliases: ['manual-input', 'sloped-rectangle'] },
+  { id: 'manual', label: 'Manual operation', mermaidShape: 'trap-t', aliases: ['manual', 'trapezoid-top', 'inv-trapezoid'] },
+  { id: 'priority', label: 'Priority action', mermaidShape: 'trap-b', aliases: ['priority', 'trapezoid', 'trapezoid-bottom'] },
+  { id: 'delay', label: 'Delay', mermaidShape: 'delay', aliases: ['half-rounded-rectangle'] },
+  { id: 'fork', label: 'Fork / join', mermaidShape: 'fork', aliases: ['join'] },
+  { id: 'junction', label: 'Junction', mermaidShape: 'f-circ', aliases: ['filled-circle'] },
+  { id: 'bolt', label: 'Communication link', mermaidShape: 'bolt', aliases: ['com-link', 'lightning-bolt'] },
+  { id: 'hourglass', label: 'Collate', mermaidShape: 'hourglass', aliases: ['collate'] },
+  { id: 'triangle', label: 'Extract', mermaidShape: 'tri', aliases: ['extract'] },
+  { id: 'lined-cylinder', label: 'Disk storage', mermaidShape: 'lin-cyl', aliases: ['disk', 'lined-cylinder'] },
+  { id: 'horizontal-cylinder', label: 'Direct storage', mermaidShape: 'h-cyl', aliases: ['das', 'horizontal-cylinder'] },
+  { id: 'window-pane', label: 'Internal storage', mermaidShape: 'win-pane', aliases: ['internal-storage', 'window-pane'] },
+  { id: 'text', label: 'Text block', mermaidShape: 'text', aliases: ['text'] },
 ]
 
 export const EDGE_TYPES = [
@@ -36,27 +55,50 @@ export const DIRECTIONS = [
 ]
 
 const SHAPE_BY_ID = Object.fromEntries(NODE_SHAPES.map((shape) => [shape.id, shape]))
+const SHAPE_BY_ALIAS = new Map()
+for (const shape of NODE_SHAPES) {
+  SHAPE_BY_ALIAS.set(shape.id.toLowerCase(), shape)
+  SHAPE_BY_ALIAS.set((shape.mermaidShape || shape.id).toLowerCase(), shape)
+  for (const alias of shape.aliases || []) SHAPE_BY_ALIAS.set(alias.toLowerCase(), shape)
+}
 // Match most specific (two-char) wrappers before generic single-char ones.
 const SHAPE_MATCH_ORDER = ['subroutine', 'cylinder', 'circle', 'parallelogram', 'stadium', 'hexagon', 'rect', 'round', 'diamond']
 
 // Endpoint = id plus an optional shape wrapper. Non-greedy bodies stop at the
 // first matching close so `Data[("x")]` and `Bus{{"y"}}` parse correctly.
+const WRAPPER_SRC =
+  '(\\[\\[[\\s\\S]*?\\]\\]|\\[\\([\\s\\S]*?\\)\\]|\\(\\([\\s\\S]*?\\)\\)|\\[\\/[\\s\\S]*?\\/\\]|' +
+  '\\(\\[[\\s\\S]*?\\]\\)|\\{\\{[\\s\\S]*?\\}\\}|\\[[\\s\\S]*?\\]|\\([\\s\\S]*?\\)|\\{[\\s\\S]*?\\})'
+const SHAPE_CONFIG_SRC = '@\\{[\\s\\S]*?\\}'
 const ENDPOINT_SRC =
   '([A-Za-z0-9_]+)\\s*' +
-  '(\\[\\[[\\s\\S]*?\\]\\]|\\[\\([\\s\\S]*?\\)\\]|\\(\\([\\s\\S]*?\\)\\)|\\[\\/[\\s\\S]*?\\/\\]|' +
-  '\\(\\[[\\s\\S]*?\\]\\)|\\{\\{[\\s\\S]*?\\}\\}|\\[[\\s\\S]*?\\]|\\([\\s\\S]*?\\)|\\{[\\s\\S]*?\\})?'
+  `(?:(${SHAPE_CONFIG_SRC})\\s*)?` +
+  `(${WRAPPER_SRC})?`
 
 const OP_BY_TOKEN = { '-->': 'arrow', '---': 'open', '-.->': 'dotted', '==>': 'thick' }
 
 function stripQuotes(text) {
   const trimmed = text.trim()
   if (trimmed.length >= 2 && ((trimmed[0] === '"' && trimmed.at(-1) === '"') || (trimmed[0] === "'" && trimmed.at(-1) === "'"))) {
-    return trimmed.slice(1, -1)
+    return trimmed.slice(1, -1).replace(/\\"/g, '"').replace(/\\'/g, "'").replace(/#quot;/g, '"')
   }
-  return trimmed
+  return trimmed.replace(/#quot;/g, '"')
 }
 
-function unwrapShape(wrapper) {
+function parseShapeConfig(config) {
+  if (!config) return null
+  const shapeMatch = config.match(/\bshape\s*:\s*["']?([A-Za-z0-9_-]+)["']?/i)
+  const labelMatch = config.match(/\blabel\s*:\s*("(\\"|[^"])*"|'(\\'|[^'])*'|[^,}]+)/i)
+  const shape = SHAPE_BY_ALIAS.get((shapeMatch?.[1] || '').toLowerCase()) || SHAPE_BY_ID.rect
+  return {
+    shape: shape.id,
+    label: labelMatch ? stripQuotes(labelMatch[1]) : null,
+  }
+}
+
+function unwrapShape(config, wrapper) {
+  const configured = parseShapeConfig(config)
+  if (configured) return configured
   if (!wrapper) return { shape: 'rect', label: null }
   for (const id of SHAPE_MATCH_ORDER) {
     const { open, close } = SHAPE_BY_ID[id]
@@ -92,13 +134,13 @@ export function parseFlowchart(text) {
   let edgeSeq = 0
   let sawHeader = false
 
-  const registerNode = (id, wrapper) => {
-    const { shape, label } = unwrapShape(wrapper)
+  const registerNode = (id, config, wrapper) => {
+    const { shape, label } = unwrapShape(config, wrapper)
     let node = nodeMap.get(id)
     if (!node) {
       node = { id, label: label ?? id, shape: shape || 'rect' }
       nodeMap.set(id, node)
-    } else if (wrapper) {
+    } else if (config || wrapper) {
       node.shape = shape || node.shape
       if (label != null) node.label = label
     }
@@ -121,7 +163,7 @@ export function parseFlowchart(text) {
         continue
       }
       // First meaningful line is not a flowchart header → unsupported for visual editing.
-      if (/^(sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|mindmap|timeline|gitGraph|quadrantChart|C4Context)/i.test(line)) {
+      if (/^(sequenceDiagram|classDiagram|stateDiagram(?:-v2)?|erDiagram|journey|gantt|pie|mindmap|timeline|gitGraph|quadrantChart|C4Context|requirementDiagram|architecture-beta|block-beta|packet|kanban|radar-beta|treemap-beta|venn-beta|xychart-beta|sankey-beta)/i.test(line)) {
         model.supported = false
         return model
       }
@@ -152,7 +194,7 @@ export function parseFlowchart(text) {
 
     // Node-only declaration.
     const nodeOnly = normalized.match(new RegExp(`^${ENDPOINT_SRC}\\s*$`))
-    if (nodeOnly) registerNode(nodeOnly[1], nodeOnly[2])
+    if (nodeOnly) registerNode(nodeOnly[1], nodeOnly[2], nodeOnly[3])
   }
 
   model.nodes = [...nodeMap.values()]
@@ -167,7 +209,7 @@ function scanChain(line, registerNode, addEdge) {
   endpointRe.lastIndex = 0
   let match = endpointRe.exec(line)
   if (!match) return
-  let prev = registerNode(match[1], match[2])
+  let prev = registerNode(match[1], match[2], match[3])
   let pos = endpointRe.lastIndex
 
   while (pos < line.length) {
@@ -178,7 +220,7 @@ function scanChain(line, registerNode, addEdge) {
     endpointRe.lastIndex = pos
     const next = endpointRe.exec(line)
     if (!next) break
-    const current = registerNode(next[1], next[2])
+    const current = registerNode(next[1], next[2], next[3])
     addEdge(prev, current, OP_BY_TOKEN[op[1]] || 'arrow', op[2] || '')
     prev = current
     pos = endpointRe.lastIndex
@@ -189,9 +231,14 @@ function quoteLabel(label) {
   return String(label ?? '').replace(/"/g, '#quot;')
 }
 
+function quoteConfigValue(value) {
+  return String(value ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
 function declareNode(node) {
   const shape = SHAPE_BY_ID[node.shape] || SHAPE_BY_ID.rect
-  return `${node.id}${shape.open}"${quoteLabel(node.label)}"${shape.close}`
+  if (shape.open && shape.close) return `${node.id}${shape.open}"${quoteLabel(node.label)}"${shape.close}`
+  return `${node.id}@{ shape: ${shape.mermaidShape || shape.id}, label: "${quoteConfigValue(node.label)}" }`
 }
 
 function edgeSegment(edge) {

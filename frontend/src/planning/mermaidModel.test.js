@@ -52,6 +52,23 @@ describe('parseFlowchart', () => {
     const model = parseFlowchart('sequenceDiagram\n  A->>B: hi')
     expect(model.supported).toBe(false)
   })
+
+  it('extracts expanded Mermaid v11 node shapes', () => {
+    const model = parseFlowchart(`flowchart LR
+      Contract@{ shape: doc, label: "API contract" } --> Link@{ shape: bolt, label: "Async channel" }
+      Link --> Store@{ shape: lin-cyl, label: "Event store" }`)
+
+    const byId = Object.fromEntries(model.nodes.map((node) => [node.id, node]))
+    expect(byId.Contract).toMatchObject({ label: 'API contract', shape: 'doc' })
+    expect(byId.Link).toMatchObject({ label: 'Async channel', shape: 'bolt' })
+    expect(byId.Store).toMatchObject({ label: 'Event store', shape: 'lined-cylinder' })
+    expect(model.edges).toHaveLength(2)
+  })
+
+  it('marks Mermaid 11 non-flowchart types as unsupported for visual editing', () => {
+    expect(parseFlowchart('architecture-beta\n  service api(server)[API]').supported).toBe(false)
+    expect(parseFlowchart('kanban\n  todo[Todo]').supported).toBe(false)
+  })
 })
 
 describe('modelToMermaid round-trip', () => {
@@ -80,6 +97,16 @@ describe('modelToMermaid round-trip', () => {
       groups: [],
     })
     expect(text).toContain('A -. events .-> B')
+  })
+
+  it('emits object syntax for expanded flowchart shapes', () => {
+    const text = modelToMermaid({
+      direction: 'LR',
+      nodes: [{ id: 'Doc', label: 'Source document', shape: 'doc' }],
+      edges: [],
+      groups: [],
+    })
+    expect(text).toContain('Doc@{ shape: doc, label: "Source document" }')
   })
 })
 

@@ -24,6 +24,7 @@ import {
 } from 'lucide-react'
 import mermaid from 'mermaid'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { DIAGRAM_TYPE_GROUPS } from './diagramCatalog'
 import { DIRECTIONS, EDGE_TYPES, modelToMermaid, NODE_SHAPES, nextNodeId, parseFlowchart } from './mermaidModel'
 
 mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'base', themeVariables: { primaryColor: '#d3e3fd', primaryTextColor: '#1f1f1f', primaryBorderColor: '#0b57d0', lineColor: '#5f6368', secondaryColor: '#e6f4ea', tertiaryColor: '#fef7e0', fontFamily: 'Roboto, sans-serif' } })
@@ -95,6 +96,14 @@ function StudioNode({ data }) {
 
 const nodeTypes = { studio: StudioNode }
 
+function DiagramTypeOptions() {
+  return DIAGRAM_TYPE_GROUPS.map((group) => (
+    <optgroup key={group.label} label={group.label}>
+      {group.types.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
+    </optgroup>
+  ))
+}
+
 function MetaList({ title, addLabel, items, fields, onAdd, onChange, onRemove }) {
   return (
     <div className="ds-meta-list">
@@ -116,8 +125,9 @@ function MetaList({ title, addLabel, items, fields, onAdd, onChange, onRemove })
 export default function DiagramStudio({ diagram, onClose, onSave, onAssist, saving }) {
   const [draft, setDraft] = useState({ title: diagram.title, diagram_type: diagram.diagram_type, mermaid_source: diagram.mermaid_source })
   const [metadata, setMetadata] = useState(() => normalizeMetadata(diagram.metadata))
-  const [model, setModel] = useState(() => parseFlowchart(diagram.mermaid_source))
-  const [mode, setMode] = useState('visual')
+  const [initialModel] = useState(() => parseFlowchart(diagram.mermaid_source))
+  const [model, setModel] = useState(initialModel)
+  const [mode, setMode] = useState(initialModel.supported ? 'visual' : 'text')
   const [connector, setConnector] = useState('arrow')
   const [selection, setSelection] = useState(null) // { kind:'node'|'edge', id }
   const [rfNodes, setRfNodes] = useState([])
@@ -164,7 +174,7 @@ export default function DiagramStudio({ diagram, onClose, onSave, onAssist, savi
     setChatBusy(true)
     setChatError(null)
     try {
-      const source = textDirty.current ? draft.mermaid_source : modelToMermaid(modelRef.current)
+      const source = textDirty.current || !modelRef.current.supported ? draft.mermaid_source : modelToMermaid(modelRef.current)
       const reply = await onAssist({ prompt, current_source: source, diagram_type: draft.diagram_type, history })
       if (reply?.mermaid) applySource(reply.mermaid)
       setMessages((current) => [...current, { role: 'assistant', content: reply?.message || 'Updated the diagram.' }])
@@ -271,7 +281,7 @@ export default function DiagramStudio({ diagram, onClose, onSave, onAssist, savi
   const onText = (value) => { setDraft((current) => ({ ...current, mermaid_source: value })); textDirty.current = true }
 
   const save = () => {
-    const source = textDirty.current ? draft.mermaid_source : modelToMermaid(model)
+    const source = textDirty.current || !model.supported ? draft.mermaid_source : modelToMermaid(model)
     // Drop annotations/positions for nodes that no longer exist.
     const liveIds = new Set(parseFlowchart(source).nodes.map((node) => node.id))
     const prune = (record) => Object.fromEntries(Object.entries(record).filter(([id]) => liveIds.has(id)))
@@ -296,8 +306,7 @@ export default function DiagramStudio({ diagram, onClose, onSave, onAssist, savi
           <span className="ds-brand"><Blocks size={18} /> Diagram studio</span>
           <input className="ds-title-input" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} aria-label="Diagram name" />
           <select value={draft.diagram_type} onChange={(event) => setDraft({ ...draft, diagram_type: event.target.value })} aria-label="Diagram type">
-            <option value="architecture">Architecture</option>
-            <option value="infrastructure">Infrastructure</option>
+            <DiagramTypeOptions />
           </select>
           <div className="ds-mode-toggle">
             <button className={mode === 'visual' ? 'active' : ''} onClick={() => changeMode('visual')}><MousePointerSquareDashed size={14} /> Visual</button>
@@ -345,7 +354,7 @@ export default function DiagramStudio({ diagram, onClose, onSave, onAssist, savi
                   <div className="ds-unsupported">
                     <Blocks size={30} />
                     <h3>Visual editing supports flowcharts</h3>
-                    <p>This diagram uses a Mermaid type the visual editor can’t round-trip yet. Switch to <b>Text</b> to edit it safely.</p>
+                    <p>This diagram uses a Mermaid type the visual editor cannot round-trip yet. Switch to <b>Text</b> to edit it safely.</p>
                     <button className="m3-btn tonal small" onClick={() => changeMode('text')}>Open text editor</button>
                   </div>
                 )}
