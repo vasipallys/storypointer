@@ -1,0 +1,66 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import DiagramStudio from './DiagramStudio'
+
+vi.mock('@xyflow/react', () => ({
+  applyEdgeChanges: (_changes, edges) => edges,
+  applyNodeChanges: (_changes, nodes) => nodes,
+  Background: () => null,
+  Controls: () => null,
+  Handle: () => null,
+  MarkerType: { ArrowClosed: 'arrowclosed' },
+  Position: { Left: 'left', Right: 'right' },
+  ReactFlow: ({ nodes, edges, onEdgeClick, children }) => (
+    <div data-testid="react-flow">
+      {nodes.map((node) => <div key={node.id}>{node.data.label}</div>)}
+      {edges.map((edge) => <button key={edge.id} type="button" onClick={() => onEdgeClick?.({}, edge)}>{edge.id}</button>)}
+      {children}
+    </div>
+  ),
+}))
+
+vi.mock('mermaid', () => ({
+  default: {
+    initialize: vi.fn(),
+    render: vi.fn(),
+  },
+}))
+
+const diagram = {
+  id: 'diagram-1',
+  title: 'Architecture',
+  diagram_type: 'architecture',
+  mermaid_source: `flowchart LR
+  A["A"] --> B["B"]`,
+  metadata: { nodes: {}, positions: { A: { x: 500, y: 500 }, B: { x: 800, y: 500 } } },
+}
+
+describe('DiagramStudio', () => {
+  afterEach(() => cleanup())
+
+  it('re-layouts the graph when direction changes and saves the new source', () => {
+    const onSave = vi.fn()
+    render(<DiagramStudio diagram={diagram} onClose={vi.fn()} onSave={onSave} />)
+
+    fireEvent.change(screen.getByLabelText('Direction'), { target: { value: 'TB' } })
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      mermaid_source: expect.stringContaining('flowchart TB'),
+      metadata: expect.objectContaining({ positions: {} }),
+    }))
+  })
+
+  it('uses the toolbar connector selector for a selected connector', () => {
+    const onSave = vi.fn()
+    render(<DiagramStudio diagram={diagram} onClose={vi.fn()} onSave={onSave} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'e0' }))
+    fireEvent.change(screen.getByLabelText('Selected connector'), { target: { value: 'dotted' } })
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      mermaid_source: expect.stringContaining('A -.-> B'),
+    }))
+  })
+})

@@ -455,6 +455,13 @@ body.dockable-resizing { cursor: col-resize; user-select: none; }
 .ds-toolbar { display: flex; align-items: center; gap: 14px; flex: none; padding: 10px 16px; border-bottom: 1px solid var(--m3-outline-variant); background: var(--m3-surface-dim); flex-wrap: wrap; }
 .ds-inline-field { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; color: var(--m3-on-surface-variant); }
 .ds-inline-field select { height: 32px; padding: 0 26px 0 9px; border: 1px solid var(--m3-outline-variant); border-radius: 8px; background: var(--m3-surface); font: 500 12px 'Roboto'; }
+.ds-connector-preview { position: relative; width: 54px; height: 18px; flex: 0 0 54px; }
+.ds-connector-preview::before { content: ''; position: absolute; left: 4px; right: 8px; top: 8px; border-top: 2px solid #5f6368; }
+.ds-connector-preview::after { content: ''; position: absolute; right: 4px; top: 4px; border-left: 7px solid #5f6368; border-top: 5px solid transparent; border-bottom: 5px solid transparent; }
+.ds-connector-preview.type-open::after { display: none; }
+.ds-connector-preview.type-dotted::before { border-top-style: dotted; border-top-width: 2px; }
+.ds-connector-preview.type-thick::before { border-top-width: 4px; border-color: var(--m3-primary); }
+.ds-connector-preview.type-thick::after { border-left-color: var(--m3-primary); }
 .ds-toolbar-hint { margin-left: auto; font-size: 11px; color: var(--m3-on-surface-variant); }
 .ds-canvas-row { display: flex; flex: 1; min-height: 0; }
 .ds-canvas { position: relative; flex: 1; min-width: 0; background: var(--m3-surface); }

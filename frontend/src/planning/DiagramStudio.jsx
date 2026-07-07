@@ -255,7 +255,10 @@ export default function DiagramStudio({ diagram, onClose, onSave, onAssist, savi
     })
   }, [])
 
-  const changeDirection = (direction) => applyModel((current) => ({ ...current, direction }))
+  const changeDirection = (direction) => {
+    applyModel((current) => ({ ...current, direction }))
+    setMetadata((current) => ({ ...current, positions: {} }))
+  }
   const changeMode = (nextMode) => {
     if (nextMode === 'visual' && textDirty.current) {
       const parsed = parseFlowchart(draft.mermaid_source)
@@ -279,7 +282,12 @@ export default function DiagramStudio({ diagram, onClose, onSave, onAssist, savi
 
   const selectedNode = selection?.kind === 'node' ? model.nodes.find((node) => node.id === selection.id) : null
   const selectedEdge = selection?.kind === 'edge' ? model.edges.find((edge) => edge.id === selection.id) : null
+  const activeConnector = selectedEdge?.type || connector
   const nodeMeta = selectedNode ? (metadata.nodes[selectedNode.id] || { explanation: '', properties: [], links: [], documents: [] }) : null
+  const changeConnector = (type) => {
+    setConnector(type)
+    if (selection?.kind === 'edge') updateEdge(selection.id, { type })
+  }
 
   return (
     <div className="ds-scrim" role="dialog" aria-modal="true" aria-label="Diagram studio">
@@ -307,8 +315,10 @@ export default function DiagramStudio({ diagram, onClose, onSave, onAssist, savi
               <button className="m3-btn tonal small" onClick={addNode}><Plus size={14} /> Add node</button>
               <label className="ds-inline-field"><span>Direction</span>
                 <select value={model.direction} onChange={(event) => changeDirection(event.target.value)}>{DIRECTIONS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
-              <label className="ds-inline-field"><span>New connector</span>
-                <select value={connector} onChange={(event) => setConnector(event.target.value)}>{EDGE_TYPES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+              <label className="ds-inline-field"><span>{selectedEdge ? 'Selected connector' : 'New connector'}</span>
+                <select value={activeConnector} onChange={(event) => changeConnector(event.target.value)}>{EDGE_TYPES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select>
+                <span className={`ds-connector-preview type-${activeConnector}`} aria-hidden="true" />
+              </label>
               <span className="ds-toolbar-hint">Drag between node edges to connect</span>
             </div>
             <div className="ds-canvas-row">

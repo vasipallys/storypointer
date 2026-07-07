@@ -19,19 +19,22 @@ Copy-Item backend\.env.example backend\.env   # then fill in LLM_* keys
 npm install
 Copy-Item frontend\.env.example frontend\.env
 
-# run (two terminals)
-uvicorn backend.api.main:app --reload --port 8000
-npm run dev                                    # Vite on http://localhost:5173
+# run
+npm run dev:all                               # API on :8000 + Vite on :5173
+npm run api:dev                               # backend only
+npm run web:dev                               # frontend only
+.\scripts\run-monorepo.ps1 dev                # PowerShell wrapper for API + web
 
-python scripts/seed_demo.py                    # small demo project + C4 model
-python scripts/seed_banking.py                 # richer multi-level banking sample
+npm run api:seed:demo                         # small demo project + C4 model
+npm run api:seed:banking                      # richer multi-level banking sample
 
 # tests
-pytest backend/tests -q                        # backend
+.venv\Scripts\python.exe -m pytest backend/tests -q   # backend
 pytest backend/tests/test_mapping.py -q        # one file
 pytest backend/tests/test_l1_planning.py::test_full_operating_plan_and_cost_metrics -q   # one test
-npm test                                       # frontend (vitest run, all files)
-npm test -- InspectorPanel                     # frontend, one file by name
+npm run web:test                               # frontend (vitest run, all files)
+npm run web:test -- InspectorPanel             # frontend, one file by name
+npm run test:all                               # backend + frontend
 npm run build                                  # production build to dist/
 
 # desktop (Electron) — see the Desktop section below
@@ -41,7 +44,7 @@ npm run desktop:build:win                      # NSIS installer + portable exe i
 npm run desktop:build:mac                      # dmg + zip
 ```
 
-Frontend scripts live in the root `package.json` but pass `--config frontend/vite.config.js`; there is no separate frontend package.json workflow.
+This is a monorepo. The root `package.json` orchestrates project commands; `frontend/package.json` owns the React/Vite workspace, `desktop/package.json` owns Electron packaging, and Python backend dependencies stay in `requirements.txt`. See `docs/monorepo.md` for the boundary map and runner commands.
 
 `LLM_PROVIDER=mock` in `backend/.env` runs the full pipeline offline with no API key (deterministic, hash-based points) — use it for local UI work and demos.
 

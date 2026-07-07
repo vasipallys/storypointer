@@ -39,29 +39,31 @@ npm install
 Copy-Item frontend\.env.example frontend\.env
 ```
 
-Edit `backend/.env`, then run both processes from the repository root:
+This repo is organized as a monorepo with separate API, web, and desktop projects. The root `package.json` orchestrates the workspace; project-specific Node dependencies live in `frontend/package.json` and `desktop/package.json`. See [docs/monorepo.md](docs/monorepo.md) for the boundary map.
+
+Edit `backend/.env`, then run API and web together from the repository root:
 
 ```powershell
-# terminal 1
 .\.venv\Scripts\Activate.ps1
-uvicorn backend.api.main:app --reload --port 8000
+npm run dev:all
 
-# terminal 2
-npm run dev
+# or use the PowerShell runner
+.\scripts\run-monorepo.ps1 dev
 ```
 
 Open `http://localhost:5173`. Seed sample projects:
 
 ```powershell
-python scripts\seed_demo.py      # small: 1 system, 3 containers, 4 stories
-python scripts\seed_banking.py   # detailed retail-banking structure: 33 elements across L1-L4
+npm run api:seed:demo      # small: 1 system, 3 containers, 4 stories
+npm run api:seed:banking   # detailed retail-banking structure: 33 elements across L1-L4
 ```
 
 Useful checks:
 
 ```powershell
-pytest backend/tests -q
-npm test
+npm run api:test
+npm run web:test
+npm run test:all
 npm run build
 ```
 
@@ -75,12 +77,11 @@ Story Pointer supports two runtimes that share the same React/FastAPI codebase:
 Web development:
 
 ```powershell
-# terminal 1
-.\.venv\Scripts\Activate.ps1
-uvicorn backend.api.main:app --reload --port 8000
+npm run dev:all
 
-# terminal 2
-npm run dev
+# or split terminals
+npm run api:dev
+npm run web:dev
 ```
 
 Electron development:
