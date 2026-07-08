@@ -87,6 +87,9 @@ class AgileUnitUpdate(BaseModel):
 
 class TeamMemberCreate(BaseModel):
     name: str = Field(min_length=1, max_length=160)
+    # Optional link to a person in the global resource directory. When set, the
+    # store validates the person exists and caps their allocation across all teams.
+    resource_staff_id: str | None = None
     role: str = Field(default="", max_length=160)
     skills: str = Field(default="", max_length=1000)
     location: str = Field(default="", max_length=160)
@@ -96,6 +99,7 @@ class TeamMemberCreate(BaseModel):
 
 class TeamMemberUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=160)
+    resource_staff_id: str | None = None
     role: str | None = Field(default=None, max_length=160)
     skills: str | None = Field(default=None, max_length=1000)
     location: str | None = Field(default=None, max_length=160)

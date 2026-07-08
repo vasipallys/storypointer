@@ -30,6 +30,7 @@ from backend.models import (
 )
 from backend.planning.router import router as planning_router
 from backend.projects.router import router as projects_router
+from backend.resources.router import router as resources_router
 from backend.storage.db import checkpoint_path, init_db
 
 
@@ -88,6 +89,7 @@ app.add_middleware(
 app.include_router(projects_router)
 app.include_router(c4_router)
 app.include_router(planning_router)
+app.include_router(resources_router)
 
 
 @app.exception_handler(RequestValidationError)

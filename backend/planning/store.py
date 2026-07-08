@@ -202,14 +202,44 @@ def delete_unit(project_id: str, unit_id: str) -> None:
         raise NotFoundError(f"Agile unit '{unit_id}' was not found")
 
 
+def _require_resource(conn: Any, resource_staff_id: str | None) -> None:
+    if resource_staff_id and conn.execute(
+        "SELECT 1 FROM resource_staff WHERE id = ?", (resource_staff_id,)
+    ).fetchone() is None:
+        raise PlanningValidationError(f"Resource '{resource_staff_id}' was not found in the directory")
+
+
+def _assert_allocation_within_cap(
+    conn: Any, resource_staff_id: str | None, allocation_percent: float, exclude_member_id: str | None = None
+) -> None:
+    """A directory person's allocation across every team must stay within 100%."""
+    if not resource_staff_id:
+        return
+    sql = "SELECT COALESCE(SUM(allocation_percent), 0) FROM l1_team_members WHERE resource_staff_id = ?"
+    params: list[Any] = [resource_staff_id]
+    if exclude_member_id:
+        sql += " AND id != ?"
+        params.append(exclude_member_id)
+    existing = conn.execute(sql, params).fetchone()[0]
+    total = existing + allocation_percent
+    if total > 100:
+        name_row = conn.execute("SELECT staff_name FROM resource_staff WHERE id = ?", (resource_staff_id,)).fetchone()
+        who = name_row[0] if name_row else "This resource"
+        raise PlanningValidationError(
+            f"{who} would be allocated {total:g}% across teams (already {existing:g}%); the total cannot exceed 100%."
+        )
+
+
 def create_member(project_id: str, unit_id: str, payload: TeamMemberCreate) -> dict[str, Any]:
     with connect() as conn:
         _require_unit(conn, project_id, unit_id)
+        _require_resource(conn, payload.resource_staff_id)
+        _assert_allocation_within_cap(conn, payload.resource_staff_id, payload.allocation_percent)
         record = {"id": new_id(), "unit_id": unit_id, "created_at": utc_now(), **payload.model_dump()}
         conn.execute(
             """INSERT INTO l1_team_members
-               (id, unit_id, name, role, skills, location, allocation_percent, monthly_cost, created_at)
-               VALUES (:id, :unit_id, :name, :role, :skills, :location, :allocation_percent, :monthly_cost, :created_at)""",
+               (id, unit_id, resource_staff_id, name, role, skills, location, allocation_percent, monthly_cost, created_at)
+               VALUES (:id, :unit_id, :resource_staff_id, :name, :role, :skills, :location, :allocation_percent, :monthly_cost, :created_at)""",
             record,
         )
     return record
@@ -225,6 +255,10 @@ def update_member(project_id: str, member_id: str, payload: TeamMemberUpdate) ->
         ).fetchone()
         if row is None:
             raise NotFoundError(f"Team member '{member_id}' was not found")
+        resource_staff_id = changes.get("resource_staff_id", row["resource_staff_id"])
+        allocation = changes.get("allocation_percent", row["allocation_percent"])
+        _require_resource(conn, resource_staff_id)
+        _assert_allocation_within_cap(conn, resource_staff_id, allocation, exclude_member_id=member_id)
         if changes:
             assignments = ", ".join(f"{key} = :{key}" for key in changes)
             conn.execute(

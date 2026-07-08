@@ -1,10 +1,11 @@
-import { BrainCircuit, Server } from 'lucide-react'
+import { BrainCircuit, Server, Users } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { api } from './api/client'
 import NewProjectWizard from './screens/NewProjectWizard'
 import ProjectsHome from './screens/ProjectsHome'
 import ProjectWorkspace from './screens/ProjectWorkspace'
 import QuickEstimate from './screens/QuickEstimate'
+import ResourceDirectory from './screens/ResourceDirectory'
 
 export default function App() {
   const [route, setRoute] = useState({ name: 'home' })
@@ -29,6 +30,10 @@ export default function App() {
         <span className="m3-brand-mark"><BrainCircuit size={20} /></span>
         <span style={{ textAlign: 'left' }}><strong>Story Pointer</strong><small>C4 workspace · evidence-led estimation</small></span>
       </button>
+      <nav className="m3-topbar-nav">
+        <button className={route.name === 'home' ? 'active' : ''} onClick={() => setRoute({ name: 'home' })}>Platforms</button>
+        <button className={route.name === 'resources' ? 'active' : ''} onClick={() => setRoute({ name: 'resources' })}><Users size={14} /> Resources</button>
+      </nav>
       <div className="m3-topbar-status">
         <span className="m3-chip"><Server size={13} />{config ? (config.llm.provider ? `${config.llm.provider} · ${config.llm.model}` : 'LLM not configured') : 'Checking model…'}</span>
         {jiraStatuses.map(([name, value]) => <span key={name} className={`m3-chip ${value.status === 'ok' ? 'ok' : 'bad'}`}>{name}</span>)}
@@ -52,6 +57,7 @@ export default function App() {
           <div className="m3-page-title"><h1>Quick estimate</h1><p>One-off estimation without a platform — form, Jira browse, or spreadsheet.</p></div>
           <QuickEstimate config={config} />
         </>}
+        {route.name === 'resources' && <ResourceDirectory />}
       </div>}
   </div>
 }

@@ -71,6 +71,16 @@ This is a monorepo. The root `package.json` orchestrates project commands; `fron
 - Invariants enforced in [backend/planning/store.py](backend/planning/store.py): a plan attaches only to an L1 element; a squad's parent must be a tribe in the same plan; a work item's `linked_element_id` must be an L2–L4 descendant of that L1, and its `squad_id` a squad in the same plan; `end_date >= start_date`.
 - `get_plan` returns the plan plus **deterministically computed** `metrics` (people, allocated FTE, monthly run-rate, planned/actual cost + variance, at-risk work) — no LLM involvement. Money is presentation-only; the stored `currency_code` (per-L1 `l1_plan_settings`) just labels it.
 
+### Spreadsheet ingest (`backend/ingest/`)
+
+- `excel.py` backs the Quick estimate "Excel upload" path (CSV/`.xlsx`/`.xls` via pandas). `suggest_mapping` fuzzy-matches source headers to the five target fields (title, user_story, acceptance_criteria, technical_breakdown, existing_points) using `TARGET_ALIASES` + `difflib`; `rows_to_stories` then applies the (user-confirmable) mapping to build `Story` objects with `source="upload"`, skipping blank-title rows. `template_workbook` generates the downloadable starter sheet. Title is the only required mapping.
+
+### Global resource directory (`backend/resources/`)
+
+- App-global (not project-scoped) staff pool any module can reference — served under `/resources/...`, same store/service/router layering. Tables `resource_staff`, `resource_lookups`, `resource_custom_fields` live in [backend/storage/db.py](backend/storage/db.py); default Tech Unit / Rank / HR Role lookups are seeded once in `init_db`.
+- Fixed staff columns mirror the standard schema (name, type, status, sub_status, dates, `reporting_manager_id`); `staff_code` is generated (`STF-0001`, …). The three "…defined in X Table" fields (`tech_unit`/`rank`/`hr_role`) are validated against the `resource_lookups` category on write. Anything beyond the fixed columns is user-defined: **custom field definitions** (`resource_custom_fields`, typed text/number/date/select/boolean) whose values live in each staff row's `custom_values` JSON — validated in [backend/resources/store.py](backend/resources/store.py) (unknown keys rejected, required present, select options enforced).
+- Invariants in `store.py`: a lookup can't be deleted while assigned to staff; a manager must exist and not be self; deleting a person nulls reports' `reporting_manager_id`. Frontend is the global **Resources** screen ([frontend/src/screens/ResourceDirectory.jsx](frontend/src/screens/ResourceDirectory.jsx)), reached from the top-bar nav; its "Lists & fields" dialog manages lookups and custom-field definitions.
+
 ### Desktop app (`desktop/`, Electron + PyInstaller)
 
 - The same web build and FastAPI backend ship as a self-contained desktop app; no code forks. `desktop/electron/main.cjs` is the Electron main process: it starts the backend, waits on `/health`, then loads the UI (dev server URL when `ELECTRON_DEV_SERVER_URL` is set, otherwise `dist/index.html`).

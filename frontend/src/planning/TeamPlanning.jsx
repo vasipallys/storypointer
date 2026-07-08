@@ -1,13 +1,17 @@
 import { Crown, Gauge, LayoutGrid, ListTree, Pencil, Plus, Trash2, UserPlus, UsersRound } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import PlanningDialog from './PlanningDialog'
 
 const emptyUnit = { unit_type: 'squad', name: '', parent_unit_id: '', mission: '', lead_name: '', capacity_fte: 0, target_velocity: 0 }
-const emptyMember = { name: '', role: '', skills: '', location: '', allocation_percent: 100, monthly_cost: 0 }
+const emptyMember = { name: '', resource_staff_id: '', role: '', skills: '', location: '', allocation_percent: 100, monthly_cost: 0 }
 
 function number(value) {
   return Number(value || 0)
+}
+
+function clampPercent(value) {
+  return Math.min(100, Math.max(0, number(value)))
 }
 
 function unitRunRate(unit) {
@@ -19,6 +23,10 @@ export default function TeamPlanning({ projectId, l1Id, plan, refresh, setError,
   const [memberDialog, setMemberDialog] = useState(null)
   const [busy, setBusy] = useState(false)
   const [view, setView] = useState('hierarchy')
+  const [resources, setResources] = useState([])
+
+  // People come from the global resource directory; only active staff are assignable.
+  useEffect(() => { api.listStaff({ staff_status: 'Active' }).then(setResources).catch(() => setResources([])) }, [])
   const tribes = plan.units.filter((unit) => unit.unit_type === 'tribe')
   const squads = plan.units.filter((unit) => unit.unit_type === 'squad')
   const independentSquads = squads.filter((squad) => !tribes.some((tribe) => tribe.id === squad.parent_unit_id))
@@ -42,11 +50,31 @@ export default function TeamPlanning({ projectId, l1Id, plan, refresh, setError,
   const saveMember = async () => {
     setBusy(true)
     try {
-      const payload = { ...memberDialog.draft, allocation_percent: number(memberDialog.draft.allocation_percent), monthly_cost: number(memberDialog.draft.monthly_cost) }
+      const draft = memberDialog.draft
+      const payload = {
+        ...draft,
+        resource_staff_id: draft.resource_staff_id || null,
+        allocation_percent: clampPercent(draft.allocation_percent),
+        monthly_cost: number(draft.monthly_cost),
+      }
       if (memberDialog.editing) await api.updateTeamMember(projectId, memberDialog.editing.id, payload)
       else await api.createTeamMember(projectId, memberDialog.unit.id, payload)
       setMemberDialog(null); await refresh()
     } catch (error) { setError(error) } finally { setBusy(false) }
+  }
+
+  // Pick a directory person: copy their display name, and default the squad role from HR role if blank.
+  const chooseResource = (staffId) => {
+    const person = resources.find((row) => row.id === staffId)
+    setMemberDialog((current) => ({
+      ...current,
+      draft: {
+        ...current.draft,
+        resource_staff_id: staffId,
+        name: person ? person.staff_name : current.draft.name,
+        role: current.draft.role || person?.hr_role || '',
+      },
+    }))
   }
 
   const removeUnit = async (unit) => {
@@ -74,7 +102,7 @@ export default function TeamPlanning({ projectId, l1Id, plan, refresh, setError,
     unit,
     editing: member,
     draft: member ? {
-      name: member.name, role: member.role, skills: member.skills, location: member.location,
+      name: member.name, resource_staff_id: member.resource_staff_id || '', role: member.role, skills: member.skills, location: member.location,
       allocation_percent: member.allocation_percent, monthly_cost: member.monthly_cost,
     } : { ...emptyMember },
   })
@@ -141,20 +169,30 @@ export default function TeamPlanning({ projectId, l1Id, plan, refresh, setError,
       <label className="m3-field"><span>Name</span><input autoFocus value={unitDialog.draft.name} onChange={(event) => setUnitDialog({ ...unitDialog, draft: { ...unitDialog.draft, name: event.target.value } })} placeholder={unitDialog.draft.unit_type === 'tribe' ? 'Digital Commerce Tribe' : 'Checkout Squad'} /></label>
       {unitDialog.draft.unit_type === 'squad' && tribes.length > 0 && <label className="m3-field"><span>Parent tribe</span><select value={unitDialog.draft.parent_unit_id} onChange={(event) => setUnitDialog({ ...unitDialog, draft: { ...unitDialog.draft, parent_unit_id: event.target.value } })}><option value="">Independent squad</option>{tribes.map((tribe) => <option key={tribe.id} value={tribe.id}>{tribe.name}</option>)}</select></label>}
       <label className="m3-field"><span>Mission / work details</span><textarea rows={3} value={unitDialog.draft.mission} onChange={(event) => setUnitDialog({ ...unitDialog, draft: { ...unitDialog.draft, mission: event.target.value } })} placeholder="What outcome does this team own?" /></label>
-      <label className="m3-field"><span>Lead</span><input value={unitDialog.draft.lead_name} onChange={(event) => setUnitDialog({ ...unitDialog, draft: { ...unitDialog.draft, lead_name: event.target.value } })} /></label>
+      <label className="m3-field"><span>Lead</span><select value={unitDialog.draft.lead_name} onChange={(event) => setUnitDialog({ ...unitDialog, draft: { ...unitDialog.draft, lead_name: event.target.value } })}><option value="">— select from resource directory —</option>{unitDialog.draft.lead_name && !resources.some((row) => row.staff_name === unitDialog.draft.lead_name) && <option value={unitDialog.draft.lead_name}>{unitDialog.draft.lead_name} (not in directory)</option>}{resources.map((row) => <option key={row.id} value={row.staff_name}>{row.staff_name}</option>)}</select></label>
       <div className="l1-form-grid"><label className="m3-field"><span>Capacity (FTE)</span><input type="number" min="0" step="0.1" value={unitDialog.draft.capacity_fte} onChange={(event) => setUnitDialog({ ...unitDialog, draft: { ...unitDialog.draft, capacity_fte: event.target.value } })} /></label><label className="m3-field"><span>Target velocity / sprint</span><input type="number" min="0" step="1" value={unitDialog.draft.target_velocity} onChange={(event) => setUnitDialog({ ...unitDialog, draft: { ...unitDialog.draft, target_velocity: event.target.value } })} /></label></div>
     </PlanningDialog>}
 
     {memberDialog && <PlanningDialog title={`${memberDialog.editing ? 'Edit' : 'Add'} team member`} onClose={() => setMemberDialog(null)}
-      actions={<><button className="m3-btn text" onClick={() => setMemberDialog(null)}>Cancel</button><button className="m3-btn filled" disabled={busy || !memberDialog.draft.name.trim()} onClick={saveMember}>Save person</button></>}>
+      actions={<><button className="m3-btn text" onClick={() => setMemberDialog(null)}>Cancel</button><button className="m3-btn filled" disabled={busy || !memberDialog.draft.resource_staff_id} onClick={saveMember}>Save person</button></>}>
       <div className="m3-banner info">
         {memberDialog.unit.unit_type === 'tribe'
           ? `Tribe shared role: ${memberDialog.unit.name}. Use this only for tribe-level leadership or shared roles; add delivery members inside squads.`
           : `Squad: ${memberDialog.unit.name}`}
       </div>
-      <div className="l1-form-grid"><label className="m3-field"><span>Name</span><input autoFocus value={memberDialog.draft.name} onChange={(event) => setMemberDialog({ ...memberDialog, draft: { ...memberDialog.draft, name: event.target.value } })} /></label><label className="m3-field"><span>Role</span><input value={memberDialog.draft.role} onChange={(event) => setMemberDialog({ ...memberDialog, draft: { ...memberDialog.draft, role: event.target.value } })} placeholder="Senior engineer" /></label></div>
+      <div className="l1-form-grid">
+        <label className="m3-field"><span>Person (from resource directory)</span>
+          <select autoFocus value={memberDialog.draft.resource_staff_id} onChange={(event) => chooseResource(event.target.value)}>
+            <option value="">— select a resource —</option>
+            {memberDialog.draft.resource_staff_id && !resources.some((row) => row.id === memberDialog.draft.resource_staff_id) && <option value={memberDialog.draft.resource_staff_id}>{memberDialog.draft.name || 'Current person'} (inactive/removed)</option>}
+            {resources.map((row) => <option key={row.id} value={row.id}>{row.staff_name}{row.staff_code ? ` · ${row.staff_code}` : ''}</option>)}
+          </select>
+        </label>
+        <label className="m3-field"><span>Role in this team</span><input value={memberDialog.draft.role} onChange={(event) => setMemberDialog({ ...memberDialog, draft: { ...memberDialog.draft, role: event.target.value } })} placeholder="Senior engineer" /></label>
+      </div>
+      {resources.length === 0 && <div className="m3-banner">No active resources found. Add people in the Resources directory first.</div>}
       <label className="m3-field"><span>Skills</span><input value={memberDialog.draft.skills} onChange={(event) => setMemberDialog({ ...memberDialog, draft: { ...memberDialog.draft, skills: event.target.value } })} placeholder="React, Java, AWS, payments" /></label>
-      <div className="l1-form-grid"><label className="m3-field"><span>Location</span><input value={memberDialog.draft.location} onChange={(event) => setMemberDialog({ ...memberDialog, draft: { ...memberDialog.draft, location: event.target.value } })} /></label><label className="m3-field"><span>Allocation %</span><input type="number" min="0" max="100" value={memberDialog.draft.allocation_percent} onChange={(event) => setMemberDialog({ ...memberDialog, draft: { ...memberDialog.draft, allocation_percent: event.target.value } })} /></label></div>
+      <div className="l1-form-grid"><label className="m3-field"><span>Location</span><input value={memberDialog.draft.location} onChange={(event) => setMemberDialog({ ...memberDialog, draft: { ...memberDialog.draft, location: event.target.value } })} /></label><label className="m3-field"><span>Allocation %</span><input type="number" min="0" max="100" value={memberDialog.draft.allocation_percent} onChange={(event) => setMemberDialog({ ...memberDialog, draft: { ...memberDialog.draft, allocation_percent: clampPercent(event.target.value) } })} /></label></div>
       <label className="m3-field"><span>Monthly loaded cost</span><input type="number" min="0" step="100" value={memberDialog.draft.monthly_cost} onChange={(event) => setMemberDialog({ ...memberDialog, draft: { ...memberDialog.draft, monthly_cost: event.target.value } })} /></label>
     </PlanningDialog>}
   </>

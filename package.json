@@ -14,6 +14,7 @@
     "api:dev": "node scripts/run-python.mjs -m uvicorn backend.api.main:app --reload --port 8000",
     "api:seed:banking": "node scripts/run-python.mjs scripts/seed_banking.py",
     "api:seed:demo": "node scripts/run-python.mjs scripts/seed_demo.py",
+    "api:seed:resources": "node scripts/run-python.mjs scripts/seed_resources.py",
     "api:test": "node scripts/run-python.mjs -m pytest backend/tests -q",
     "backend:bundle": "npm run desktop:backend:bundle",
     "build": "npm run web:build",

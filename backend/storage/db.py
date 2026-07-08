@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS l1_plan_settings (
 CREATE TABLE IF NOT EXISTS l1_team_members (
   id TEXT PRIMARY KEY,
   unit_id TEXT NOT NULL REFERENCES l1_agile_units(id) ON DELETE CASCADE,
+  resource_staff_id TEXT REFERENCES resource_staff(id) ON DELETE SET NULL,
   name TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT '',
   skills TEXT NOT NULL DEFAULT '',
@@ -205,6 +206,44 @@ CREATE TABLE IF NOT EXISTS l1_requirement_audit (
   detail_json TEXT NOT NULL DEFAULT '{{}}',
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS resource_staff (
+  id TEXT PRIMARY KEY,
+  staff_code TEXT NOT NULL UNIQUE,
+  staff_first_name TEXT NOT NULL,
+  staff_last_name TEXT NOT NULL,
+  staff_name TEXT NOT NULL DEFAULT '',
+  staff_type TEXT NOT NULL DEFAULT 'Perm' CHECK (staff_type IN ('Perm','Contract')),
+  staff_status TEXT NOT NULL DEFAULT 'Active' CHECK (staff_status IN ('Active','Inactive')),
+  sub_status TEXT NOT NULL DEFAULT 'UnAllocated' CHECK (sub_status IN ('Allocated','UnAllocated','PartiallyAllocated')),
+  tech_unit TEXT NOT NULL DEFAULT '',
+  citizenship TEXT NOT NULL DEFAULT '',
+  rank TEXT NOT NULL DEFAULT '',
+  hr_role TEXT NOT NULL DEFAULT '',
+  staff_start_date TEXT,
+  staff_end_date TEXT,
+  reporting_manager_id TEXT REFERENCES resource_staff(id) ON DELETE SET NULL,
+  custom_values TEXT NOT NULL DEFAULT '{{}}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS resource_lookups (
+  id TEXT PRIMARY KEY,
+  category TEXT NOT NULL CHECK (category IN ('tech_unit','rank','hr_role')),
+  code TEXT NOT NULL,
+  label TEXT NOT NULL,
+  UNIQUE (category, code)
+);
+CREATE TABLE IF NOT EXISTS resource_custom_fields (
+  id TEXT PRIMARY KEY,
+  key TEXT NOT NULL UNIQUE,
+  label TEXT NOT NULL,
+  field_type TEXT NOT NULL DEFAULT 'text' CHECK (field_type IN ('text','number','date','select','boolean')),
+  required INTEGER NOT NULL DEFAULT 0,
+  options TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_resource_staff_manager ON resource_staff(reporting_manager_id);
+CREATE INDEX IF NOT EXISTS idx_resource_lookups_category ON resource_lookups(category);
 CREATE INDEX IF NOT EXISTS idx_elements_project ON c4_elements(project_id);
 CREATE INDEX IF NOT EXISTS idx_elements_parent ON c4_elements(parent_id);
 CREATE INDEX IF NOT EXISTS idx_relations_project ON c4_relations(project_id);
@@ -275,6 +314,25 @@ def _ensure_l1_diagram_type_check(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_l1_diagrams_element ON l1_diagrams(l1_element_id)")
 
 
+_DEFAULT_RESOURCE_LOOKUPS = {
+    "tech_unit": [("PLATFORM", "Platform"), ("DATA", "Data & Analytics"), ("MOBILE", "Mobile"), ("CLOUD", "Cloud & Infra")],
+    "rank": [("A1", "Analyst"), ("SA", "Senior Analyst"), ("C", "Consultant"), ("SC", "Senior Consultant"), ("M", "Manager")],
+    "hr_role": [("ENG", "Engineer"), ("QA", "QA Engineer"), ("BA", "Business Analyst"), ("PM", "Project Manager"), ("ARCH", "Architect")],
+}
+
+
+def _seed_resource_lookups(conn: sqlite3.Connection) -> None:
+    """Populate the reference tables once so the staff form has defaults to pick from."""
+    if conn.execute("SELECT 1 FROM resource_lookups LIMIT 1").fetchone():
+        return
+    for category, entries in _DEFAULT_RESOURCE_LOOKUPS.items():
+        for code, label in entries:
+            conn.execute(
+                "INSERT INTO resource_lookups (id, category, code, label) VALUES (?, ?, ?, ?)",
+                (uuid.uuid4().hex, category, code, label),
+            )
+
+
 def init_db(path: Path | None = None) -> None:
     target = path or db_path()
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -284,6 +342,8 @@ def init_db(path: Path | None = None) -> None:
         _ensure_columns(conn, "l1_diagrams", {"metadata": "TEXT NOT NULL DEFAULT '{}'"})
         _ensure_l1_diagram_type_check(conn)
         _ensure_columns(conn, "projects", {"leads": "TEXT NOT NULL DEFAULT '[]'"})
+        _ensure_columns(conn, "l1_team_members", {"resource_staff_id": "TEXT REFERENCES resource_staff(id) ON DELETE SET NULL"})
+        _seed_resource_lookups(conn)
     _initialized.add(str(target))
 
 

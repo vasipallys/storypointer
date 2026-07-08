@@ -139,6 +139,24 @@ export const api = {
     `/projects/${id}/l1/requirements/${documentId}/export/${format}`,
     { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) },
   ),
+
+  // Global resource directory — staff pool reusable across modules.
+  listStaff: (filters = {}) => {
+    const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => value))
+    return jsonRequest(`/resources/staff?${query}`)
+  },
+  getStaff: (staffId) => jsonRequest(`/resources/staff/${staffId}`),
+  createStaff: (payload) => json('/resources/staff', 'POST', payload),
+  updateStaff: (staffId, payload) => json(`/resources/staff/${staffId}`, 'PATCH', payload),
+  deleteStaff: (staffId) => jsonRequest(`/resources/staff/${staffId}`, { method: 'DELETE' }),
+  resourceLookups: () => jsonRequest('/resources/lookups'),
+  createLookup: (category, payload) => json(`/resources/lookups/${category}`, 'POST', payload),
+  updateLookup: (lookupId, payload) => json(`/resources/lookups/${lookupId}`, 'PATCH', payload),
+  deleteLookup: (lookupId) => jsonRequest(`/resources/lookups/${lookupId}`, { method: 'DELETE' }),
+  listCustomFields: () => jsonRequest('/resources/custom-fields'),
+  createCustomField: (payload) => json('/resources/custom-fields', 'POST', payload),
+  updateCustomField: (fieldId, payload) => json(`/resources/custom-fields/${fieldId}`, 'PATCH', payload),
+  deleteCustomField: (fieldId) => jsonRequest(`/resources/custom-fields/${fieldId}`, { method: 'DELETE' }),
 }
 
 function json(path, method, payload) {

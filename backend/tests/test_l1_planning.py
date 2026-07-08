@@ -27,6 +27,7 @@ from backend.planning.models import (
     RequirementDocumentUpdate,
     RequirementReviewAction,
     TeamMemberCreate,
+    TeamMemberUpdate,
     WorkItemCreate,
     WorkItemUpdate,
 )
@@ -57,6 +58,47 @@ def make_scope():
         C4ElementCreate(level="L2", name="Onboarding", parent_id=initiative["id"]),
     )
     return project["id"], initiative, epic
+
+
+def test_member_resource_link_and_allocation_cap():
+    from backend.resources import store as resources
+    from backend.resources.models import StaffCreate
+
+    project_id, initiative, _ = make_scope()
+    squad_a = store.create_unit(project_id, initiative["id"], AgileUnitCreate(unit_type="squad", name="Squad A"))
+    squad_b = store.create_unit(project_id, initiative["id"], AgileUnitCreate(unit_type="squad", name="Squad B"))
+    person = resources.create_staff(StaffCreate(staff_first_name="Ada", staff_last_name="Lovelace"))
+
+    # An unknown resource id is rejected.
+    with pytest.raises(store.PlanningValidationError):
+        store.create_member(project_id, squad_a["id"], TeamMemberCreate(name="X", resource_staff_id="missing", allocation_percent=10))
+
+    # First allocation of 60% is fine and the link round-trips.
+    first = store.create_member(
+        project_id, squad_a["id"],
+        TeamMemberCreate(name="Ada Lovelace", resource_staff_id=person["id"], allocation_percent=60),
+    )
+    assert first["resource_staff_id"] == person["id"]
+
+    # Adding the same person on another squad at 60% would reach 120% -> rejected.
+    with pytest.raises(store.PlanningValidationError):
+        store.create_member(
+            project_id, squad_b["id"],
+            TeamMemberCreate(name="Ada Lovelace", resource_staff_id=person["id"], allocation_percent=60),
+        )
+
+    # 40% fits exactly to 100%.
+    store.create_member(
+        project_id, squad_b["id"],
+        TeamMemberCreate(name="Ada Lovelace", resource_staff_id=person["id"], allocation_percent=40),
+    )
+
+    # Bumping the first membership now would exceed 100% -> rejected.
+    with pytest.raises(store.PlanningValidationError):
+        store.update_member(project_id, first["id"], TeamMemberUpdate(allocation_percent=70))
+
+    # Members without a resource link are unconstrained (legacy free-text behavior).
+    store.create_member(project_id, squad_a["id"], TeamMemberCreate(name="Contractor", allocation_percent=100))
 
 
 def test_full_operating_plan_and_cost_metrics():
