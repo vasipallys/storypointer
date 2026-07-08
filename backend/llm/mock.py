@@ -9,6 +9,7 @@ and a 13 exercises the spike/split branch end to end.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import zlib
 from typing import Any
@@ -348,6 +349,120 @@ def _build_diagram_ai(messages: list[Any]) -> BaseModel:
     return DiagramAIOutput(mermaid=mermaid, message=message)
 
 
+def _json_after(text: str, label: str) -> Any:
+    """Extract the bracket-balanced JSON array/object that follows a label."""
+    start = text.find(label)
+    if start == -1:
+        return None
+    segment = text[start + len(label):]
+    open_index = next((i for i, ch in enumerate(segment) if ch in "[{"), -1)
+    if open_index == -1:
+        return None
+    opener = segment[open_index]
+    closer = "]" if opener == "[" else "}"
+    depth = 0
+    for i in range(open_index, len(segment)):
+        if segment[i] == opener:
+            depth += 1
+        elif segment[i] == closer:
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(segment[open_index:i + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
+def _build_agentic(schema: type[BaseModel], messages: list[Any]) -> BaseModel:
+    """Deterministic offline proposals for the agentic services (LLM_PROVIDER=mock)."""
+    from backend.ai.schemas import (
+        C4Scaffold, NarrativeOutput, ProposedStory, ScaffoldElement, ScaffoldRelation,
+        StaffingAssignment, StaffingProposal, StoryDecomposition,
+    )
+
+    # Parse the human message only — labels like "RESOURCE POOL" also appear in
+    # the system instructions, so joining both would match the wrong occurrence.
+    human_messages = [m for m in messages if getattr(m, "type", "") == "human"]
+    source = human_messages or messages
+    text = " ".join(str(getattr(message, "content", message)) for message in source)
+
+    if schema is StaffingProposal:
+        available = _json_after(text, "RESOURCE POOL") or []
+        squads = _json_after(text, "SQUADS:") or []
+        assignments = []
+        for index, person in enumerate(available):
+            if not squads:
+                break
+            squad = squads[index % len(squads)]
+            allocation = min(person.get("remaining_percent", 0), 50)
+            if allocation <= 0:
+                continue
+            assignments.append(StaffingAssignment(
+                staff_id=person["staff_id"], staff_name=person.get("name", ""),
+                squad_id=squad["squad_id"], squad_name=squad.get("name", ""),
+                role=person.get("hr_role", "") or "Contributor",
+                allocation_percent=allocation,
+                reason=f"Mock mode: {person.get('name', 'this person')} has {person.get('remaining_percent', 0)}% free and fits {squad.get('name', 'the squad')}.",
+            ))
+        return StaffingProposal(summary=f"Mock staffing: proposed {len(assignments)} assignment(s) across {len(squads)} squad(s).", assignments=assignments)
+
+    if schema is NarrativeOutput:
+        metrics = _json_after(text, "METRICS:") or {}
+        portfolio = metrics.get("portfolio", {})
+        resources = metrics.get("resources", {})
+        return NarrativeOutput(
+            headline=f"{portfolio.get('projects', 0)} platforms · {portfolio.get('estimated_pct', 0)}% estimated",
+            summary=(
+                f"Mock briefing: the portfolio spans {portfolio.get('projects', 0)} platforms with "
+                f"{portfolio.get('estimated', 0)}/{portfolio.get('stories', 0)} stories estimated. "
+                f"{resources.get('active', 0)} of {resources.get('total', 0)} resources are active, "
+                f"{resources.get('on_bench', 0)} on the bench, at {resources.get('avg_utilisation', 0)}% average utilisation."
+            ),
+            highlights=[
+                f"{portfolio.get('squads', 0)} squads with {portfolio.get('members', 0)} people assigned.",
+                f"{resources.get('fully_allocated', 0)} people fully allocated.",
+            ],
+            risks=(["Work items are flagged at risk."] if portfolio.get("at_risk_work_items") else ["No work items are currently at risk."]),
+            recommendations=[
+                "Move bench resources onto open squads." if resources.get("on_bench") else "Utilisation looks healthy; keep monitoring.",
+            ],
+        )
+
+    if schema is StoryDecomposition:
+        match = re.search(r"ELEMENT \([^)]*\):\s*(.+)", text)
+        name = match.group(1).splitlines()[0].strip() if match else "the scope"
+        seeds = [("Happy path", "core flow"), ("Validation & errors", "edge cases"), ("Persistence & audit", "data and traceability"), ("Tests & observability", "quality gates")]
+        stories = [ProposedStory(
+            name=f"{name}: {title}",
+            description=f"As a user, I can complete the {focus} for {name}.\nAcceptance:\n- {focus} works end to end\n- covered by tests",
+            rationale=f"Mock decomposition slice covering {focus}.",
+        ) for title, focus in seeds]
+        return StoryDecomposition(summary=f"Mock mode: decomposed '{name}' into {len(stories)} stories.", stories=stories)
+
+    if schema is C4Scaffold:
+        desc_match = re.search(r"DESCRIPTION:\s*(.+)", text, re.DOTALL)
+        keywords = _keywords(desc_match.group(1) if desc_match else text, 3)
+        elements = [
+            ScaffoldElement(ref="sys", level="L1", name=f"{keywords[0]} platform", kind="system", description="Mock-scaffolded system."),
+            ScaffoldElement(ref="web", level="L2", name=f"{keywords[0].lower()}-web", kind="container", tech="React", parent_ref="sys", description="User-facing web app."),
+            ScaffoldElement(ref="svc", level="L2", name=f"{keywords[0].lower()}-service", kind="container", tech="Spring Boot", parent_ref="sys", description="Core service."),
+            ScaffoldElement(ref="db", level="L2", name=f"{keywords[0].lower()}-db", kind="container", tech="PostgreSQL", parent_ref="sys", description="System of record."),
+            ScaffoldElement(ref="cmp1", level="L3", name=f"{keywords[1]} module", kind="component", parent_ref="svc", description="Mock component."),
+            ScaffoldElement(ref="cmp2", level="L3", name=f"{keywords[2]} module", kind="component", parent_ref="svc", description="Mock component."),
+        ]
+        relations = [
+            ScaffoldRelation(source_ref="web", target_ref="svc", label="calls", kind="sync"),
+            ScaffoldRelation(source_ref="svc", target_ref="db", label="reads/writes", kind="data"),
+        ]
+        return C4Scaffold(summary=f"Mock mode: scaffolded a C4 model around '{keywords[0]}'.", elements=elements, relations=relations)
+
+    raise RuntimeError(f"Mock LLM has no agentic builder for schema '{schema.__name__}'")
+
+
+_AGENTIC_SCHEMAS = {"StaffingProposal", "NarrativeOutput", "StoryDecomposition", "C4Scaffold"}
+
+
 class MockStructuredLLM:
     """Stands in for a structured chat model; returns a valid schema instance."""
 
@@ -358,4 +473,6 @@ class MockStructuredLLM:
         await asyncio.sleep(0.15)  # let the streaming pipeline view animate
         if self.schema.__name__ == "DiagramAIOutput":
             return _build_diagram_ai(messages)
+        if self.schema.__name__ in _AGENTIC_SCHEMAS:
+            return _build_agentic(self.schema, messages)
         return _build(self.schema, _title(messages))

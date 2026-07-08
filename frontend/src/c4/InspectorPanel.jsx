@@ -10,11 +10,34 @@ export default function InspectorPanel({ projectId, element, config, hasCachedRe
   const [error, setError] = useState(null)
   const [l1Plan, setL1Plan] = useState(null)
   const [l1Loading, setL1Loading] = useState(false)
+  const [decompose, setDecompose] = useState(null) // { loading, result, selected:Set }
 
   useEffect(() => {
     setDescription(element?.description || '')
     setError(null)
+    setDecompose(null)
   }, [element?.id])
+
+  const runDecompose = async () => {
+    setDecompose({ loading: true })
+    try {
+      const result = await api.aiDecompose(projectId, element.id)
+      setDecompose({ result, selected: new Set(result.stories.map((_, index) => index)) })
+    } catch (nextError) { setError(nextError); setDecompose(null) }
+  }
+
+  const applyDecompose = async () => {
+    const chosen = decompose.result.stories.filter((_, index) => decompose.selected.has(index))
+    if (chosen.length === 0) { setDecompose(null); return }
+    try { await api.applyDecompose(projectId, element.id, chosen); setDecompose(null); onChanged() }
+    catch (nextError) { setError(nextError) }
+  }
+
+  const toggleStory = (index) => setDecompose((current) => {
+    const selected = new Set(current.selected)
+    selected.has(index) ? selected.delete(index) : selected.add(index)
+    return { ...current, selected }
+  })
 
   useEffect(() => {
     let active = true
@@ -125,6 +148,24 @@ export default function InspectorPanel({ projectId, element, config, hasCachedRe
       {estimable && <button className="m3-btn text small" onClick={tagBug}><Bug size={14} /> Tag bug</button>}
       <button className="m3-btn text small" onClick={linkJira}><ExternalLink size={14} /> Link Jira</button>
       {config?.jira_write_enabled && <button className="m3-btn text small" onClick={createJira}><ExternalLink size={14} /> Create in Jira</button>}
+      {element.level !== 'L4' && <button className="m3-btn text small" onClick={runDecompose} disabled={decompose?.loading}>
+        <Sparkles size={14} /> {decompose?.loading ? 'Thinking…' : 'AI: suggest stories'}</button>}
     </div>
+
+    {decompose?.result && <div className="ai-decompose">
+      <div className="ai-decompose-head"><Sparkles size={14} /> {decompose.result.summary || 'Proposed child stories'}</div>
+      {decompose.result.stories.map((story, index) => (
+        <label key={index} className={`ai-decompose-row ${decompose.selected.has(index) ? 'on' : ''}`}>
+          <input type="checkbox" checked={decompose.selected.has(index)} onChange={() => toggleStory(index)} />
+          <span><strong>{story.name}</strong>{story.rationale ? <small>{story.rationale}</small> : null}</span>
+        </label>
+      ))}
+      <div className="ai-decompose-actions">
+        <button className="m3-btn text small" onClick={() => setDecompose(null)}>Dismiss</button>
+        <button className="m3-btn filled small" onClick={applyDecompose} disabled={decompose.selected.size === 0}>Add {decompose.selected.size} as proposed</button>
+      </div>
+    </div>}
+
+    {error && <div className="m3-banner error" style={{ marginTop: 10 }}>{String(error.message || error)}</div>}
   </aside>
 }

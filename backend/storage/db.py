@@ -242,6 +242,12 @@ CREATE TABLE IF NOT EXISTS resource_custom_fields (
   options TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS app_access (
+  staff_id TEXT PRIMARY KEY REFERENCES resource_staff(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'viewer' CHECK (role IN ('admin','manager','contributor','viewer')),
+  enabled INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_resource_staff_manager ON resource_staff(reporting_manager_id);
 CREATE INDEX IF NOT EXISTS idx_resource_lookups_category ON resource_lookups(category);
 CREATE INDEX IF NOT EXISTS idx_elements_project ON c4_elements(project_id);

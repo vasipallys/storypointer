@@ -1,8 +1,29 @@
 const runtimeConfig = typeof window !== 'undefined' ? window.storyPointer : null
 const API_BASE = (runtimeConfig?.apiBaseUrl || import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, '')
 
+// Local demo auth: identify the caller to the backend RBAC middleware. The
+// signed-in user is stored by AuthContext under this key.
+const AUTH_KEY = 'storypointer.auth.user'
+function authHeaders() {
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(AUTH_KEY) : null
+    if (!raw) return {}
+    const user = JSON.parse(raw)
+    const headers = {}
+    if (user?.staff_id) headers['X-User-Id'] = user.staff_id
+    if (user?.role) headers['X-User-Role'] = user.role
+    return headers
+  } catch {
+    return {}
+  }
+}
+
+function withAuth(options = {}) {
+  return { ...options, headers: { ...authHeaders(), ...(options.headers || {}) } }
+}
+
 async function jsonRequest(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, options)
+  const response = await fetch(`${API_BASE}${path}`, withAuth(options))
   const body = await response.json().catch(() => ({}))
   if (!response.ok) {
     const detail = body.error || body.detail || body
@@ -14,7 +35,7 @@ async function jsonRequest(path, options = {}) {
 }
 
 async function downloadRequest(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, options)
+  const response = await fetch(`${API_BASE}${path}`, withAuth(options))
   if (!response.ok) {
     const body = await response.json().catch(() => ({}))
     const detail = body.error || body.detail || body
@@ -30,7 +51,7 @@ async function downloadRequest(path, options = {}) {
 export async function consumeSSE(path, payload, onEvent, signal) {
   const response = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...authHeaders() },
     body: JSON.stringify(payload),
     signal,
   })
@@ -157,6 +178,22 @@ export const api = {
   createCustomField: (payload) => json('/resources/custom-fields', 'POST', payload),
   updateCustomField: (fieldId, payload) => json(`/resources/custom-fields/${fieldId}`, 'PATCH', payload),
   deleteCustomField: (fieldId) => jsonRequest(`/resources/custom-fields/${fieldId}`, { method: 'DELETE' }),
+
+  // Admin — access management (local demo auth) + reporting.
+  roles: () => jsonRequest('/access/roles'),
+  accessUsers: () => jsonRequest('/access/users'),
+  loginUsers: () => jsonRequest('/access/login-users'),
+  setAccess: (staffId, payload) => json(`/access/users/${staffId}`, 'PATCH', payload),
+  reportingOverview: () => jsonRequest('/reporting/overview'),
+
+  // Agentic AI (Phase 3)
+  reportingNarrative: () => json('/reporting/narrative', 'POST', {}),
+  aiStaffing: (id, l1Id) => json(`/projects/${id}/l1/${l1Id}/ai/staffing`, 'POST', {}),
+  applyStaffing: (id, assignments) => json(`/projects/${id}/ai/staffing/apply`, 'POST', { assignments }),
+  aiDecompose: (id, elementId, guidance = '') => json(`/projects/${id}/c4/elements/${elementId}/ai/decompose`, 'POST', { guidance }),
+  applyDecompose: (id, elementId, stories) => json(`/projects/${id}/c4/elements/${elementId}/ai/decompose/apply`, 'POST', { stories }),
+  aiScaffold: (id, description) => json(`/projects/${id}/c4/ai/scaffold`, 'POST', { description }),
+  applyScaffold: (id, payload) => json(`/projects/${id}/c4/ai/scaffold/apply`, 'POST', payload),
 }
 
 function json(path, method, payload) {

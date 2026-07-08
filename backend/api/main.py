@@ -28,8 +28,13 @@ from backend.models import (
     JiraWriteRequest,
     UploadEstimateRequest,
 )
+from backend.access.router import router as access_router
+from backend.ai.router import router as ai_router
+from backend.auth.deps import resolve_role, route_policy
+from backend.auth.permissions import can
 from backend.planning.router import router as planning_router
 from backend.projects.router import router as projects_router
+from backend.reporting.router import router as reporting_router
 from backend.resources.router import router as resources_router
 from backend.storage.db import checkpoint_path, init_db
 
@@ -78,6 +83,27 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Story Pointer API", version="2.0.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def rbac_middleware(request: Request, call_next):
+    """Local demo RBAC: enforce the capability policy for the resolved caller.
+
+    UI-gating remains the primary control; this is defense in depth. OPTIONS
+    (CORS preflight) and public config/login endpoints bypass the check.
+    """
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    requires_auth, capability = route_policy(request.method, request.url.path)
+    if requires_auth:
+        role = resolve_role(request)
+        if role is None:
+            return error_response("unauthenticated", "Sign in required.", 401)
+        if capability and not can(role, capability):
+            return error_response("forbidden", f"Your role does not permit this action ({capability}).", 403)
+    return await call_next(request)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().cors_origin_list,
@@ -90,6 +116,9 @@ app.include_router(projects_router)
 app.include_router(c4_router)
 app.include_router(planning_router)
 app.include_router(resources_router)
+app.include_router(access_router)
+app.include_router(reporting_router)
+app.include_router(ai_router)
 
 
 @app.exception_handler(RequestValidationError)

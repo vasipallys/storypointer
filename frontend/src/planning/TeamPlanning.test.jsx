@@ -4,6 +4,7 @@ import TeamPlanning from './TeamPlanning'
 
 vi.mock('../api/client', () => ({
   api: {
+    listStaff: vi.fn(() => Promise.resolve([])),
     createAgileUnit: vi.fn(),
     updateAgileUnit: vi.fn(),
     deleteAgileUnit: vi.fn(),

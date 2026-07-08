@@ -1,6 +1,6 @@
 import { applyNodeChanges, Background, Controls, Handle, MarkerType, Position, ReactFlow } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { ChevronRight, Plus, RefreshCw } from 'lucide-react'
+import { ChevronRight, Plus, RefreshCw, Sparkles, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
 import DockablePanel from '../components/DockablePanel'
@@ -37,10 +37,27 @@ export default function C4Canvas({ projectId, config, onOpenL1Plan }) {
   const [error, setError] = useState(null)
   const [nodes, setNodes] = useState([])
   const [estimating, setEstimating] = useState(null)
+  const [scaffold, setScaffold] = useState(null) // { description, loading, result }
   const resultsCache = useRef(new Map())
 
   const refresh = useCallback(() => api.c4Graph(projectId).then(setGraph).catch(setError), [projectId])
   useEffect(() => { refresh() }, [refresh])
+
+  const runScaffold = async () => {
+    if (!scaffold.description.trim()) return
+    setScaffold({ ...scaffold, loading: true })
+    try {
+      const result = await api.aiScaffold(projectId, scaffold.description)
+      setScaffold((current) => ({ ...current, loading: false, result }))
+    } catch (err) { setError(err); setScaffold((current) => ({ ...current, loading: false })) }
+  }
+
+  const applyScaffold = async () => {
+    try {
+      await api.applyScaffold(projectId, scaffold.result)
+      setScaffold(null); await refresh()
+    } catch (err) { setError(err) }
+  }
 
   const parentId = drill.length ? drill[drill.length - 1].id : null
   const visible = useMemo(() => graph.elements.filter((element) => element.parent_id === parentId), [graph, parentId])
@@ -131,9 +148,35 @@ export default function C4Canvas({ projectId, config, onOpenL1Plan }) {
         </span>)}
       </nav>
       <span style={{ flex: 1 }} />
+      {drill.length === 0 && <button className="m3-btn text small" onClick={() => setScaffold({ description: '', loading: false, result: null })}><Sparkles size={15} /> AI scaffold</button>}
       {addLevel && <button className="m3-btn tonal small" onClick={() => setAdding(true)}><Plus size={15} /> Add {KIND_LABEL[addLevel]} ({addLevel})</button>}
       <button className="m3-btn text small" onClick={refresh} aria-label="Refresh"><RefreshCw size={15} /></button>
     </div>
+
+    {scaffold && <div className="m3-dialog-scrim" onMouseDown={() => setScaffold(null)}>
+      <section className="m3-dialog wide" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="AI scaffold">
+        <header className="l1-dialog-header"><h2><Sparkles size={18} /> AI scaffold a C4 model</h2><button className="m3-icon-btn" onClick={() => setScaffold(null)} aria-label="Close"><X size={19} /></button></header>
+        <div>
+          {!scaffold.result && <>
+            <label className="m3-field"><span>Describe the system</span>
+              <textarea autoFocus rows={5} value={scaffold.description} placeholder="e.g. A retail banking platform with a customer web app, an accounts service, a payments service, and a ledger database…"
+                onChange={(event) => setScaffold({ ...scaffold, description: event.target.value })} /></label>
+            <p className="ai-hint">The agent proposes an L1 system with L2 containers, L3 components, and their relations. Nothing is created until you apply — everything lands as <strong>proposed</strong> so you can review it.</p>
+          </>}
+          {scaffold.result && <div className="ai-scaffold-preview">
+            <div className="m3-banner info">{scaffold.result.summary}</div>
+            <ul>{scaffold.result.elements.map((el) => <li key={el.ref}><span className={`res-pill`}>{el.level}</span> <strong>{el.name}</strong>{el.tech ? ` · ${el.tech}` : ''}</li>)}</ul>
+            <p className="ai-hint">{scaffold.result.elements.length} elements · {scaffold.result.relations.length} relations will be added as proposed.</p>
+          </div>}
+        </div>
+        <footer className="m3-dialog-actions">
+          <button className="m3-btn text" onClick={() => setScaffold(null)}>Cancel</button>
+          {!scaffold.result
+            ? <button className="m3-btn filled" onClick={runScaffold} disabled={scaffold.loading || !scaffold.description.trim()}>{scaffold.loading ? 'Generating…' : 'Generate'}</button>
+            : <button className="m3-btn filled" onClick={applyScaffold}>Add {scaffold.result.elements.length} elements</button>}
+        </footer>
+      </section>
+    </div>}
     <div className="m3-workspace">
       <div className="m3-canvas-wrap">
         <ReactFlow

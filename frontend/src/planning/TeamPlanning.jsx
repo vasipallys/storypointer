@@ -1,4 +1,4 @@
-import { Crown, Gauge, LayoutGrid, ListTree, Pencil, Plus, Trash2, UserPlus, UsersRound } from 'lucide-react'
+import { Crown, Gauge, LayoutGrid, ListTree, Pencil, Plus, Sparkles, Trash2, UserPlus, UsersRound } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import PlanningDialog from './PlanningDialog'
@@ -24,9 +24,36 @@ export default function TeamPlanning({ projectId, l1Id, plan, refresh, setError,
   const [busy, setBusy] = useState(false)
   const [view, setView] = useState('hierarchy')
   const [resources, setResources] = useState([])
+  const [staffing, setStaffing] = useState(null) // { loading, proposal, selected:Set }
 
   // People come from the global resource directory; only active staff are assignable.
   useEffect(() => { api.listStaff({ staff_status: 'Active' }).then(setResources).catch(() => setResources([])) }, [])
+
+  const runStaffing = async () => {
+    setStaffing({ loading: true })
+    try {
+      const proposal = await api.aiStaffing(projectId, l1Id)
+      setStaffing({ proposal, selected: new Set(proposal.assignments.map((_, index) => index)) })
+    } catch (error) { setError(error); setStaffing(null) }
+  }
+
+  const applyStaffing = async () => {
+    const chosen = staffing.proposal.assignments.filter((_, index) => staffing.selected.has(index))
+    if (chosen.length === 0) { setStaffing(null); return }
+    setBusy(true)
+    try {
+      const result = await api.applyStaffing(projectId, chosen)
+      setStaffing(null)
+      await refresh()
+      if (result.errors?.length) setError(new Error(`Applied ${result.created}; skipped: ${result.errors.join('; ')}`))
+    } catch (error) { setError(error) } finally { setBusy(false) }
+  }
+
+  const toggleAssignment = (index) => setStaffing((current) => {
+    const selected = new Set(current.selected)
+    selected.has(index) ? selected.delete(index) : selected.add(index)
+    return { ...current, selected }
+  })
   const tribes = plan.units.filter((unit) => unit.unit_type === 'tribe')
   const squads = plan.units.filter((unit) => unit.unit_type === 'squad')
   const independentSquads = squads.filter((squad) => !tribes.some((tribe) => tribe.id === squad.parent_unit_id))
@@ -155,12 +182,28 @@ export default function TeamPlanning({ projectId, l1Id, plan, refresh, setError,
         <button role="tab" aria-selected={view === 'hierarchy'} className={view === 'hierarchy' ? 'active' : ''} onClick={() => setView('hierarchy')}><ListTree size={15} /> Hierarchy</button>
         <button role="tab" aria-selected={view === 'cards'} className={view === 'cards' ? 'active' : ''} onClick={() => setView('cards')}><LayoutGrid size={15} /> Cards</button>
       </div>
+      <button className="m3-btn tonal small" onClick={runStaffing} disabled={staffing?.loading}><Sparkles size={15} /> {staffing?.loading ? 'Thinking…' : 'AI staffing'}</button>
       <button className="m3-btn outlined small" onClick={() => openUnit(null, 'tribe')}><Plus size={15} /> Tribe</button>
       <button className="m3-btn filled small" onClick={() => openUnit(null, 'squad')}><Plus size={15} /> Squad</button>
     </div>
   </div>
 
   const dialogs = <>
+    {staffing?.proposal && <PlanningDialog wide title="AI staffing proposal" onClose={() => setStaffing(null)}
+      actions={<><button className="m3-btn text" onClick={() => setStaffing(null)}>Cancel</button><button className="m3-btn filled" disabled={busy || staffing.selected.size === 0} onClick={applyStaffing}>Assign {staffing.selected.size} {staffing.selected.size === 1 ? 'person' : 'people'}</button></>}>
+      <div className="m3-banner info">{staffing.proposal.summary || 'Proposed assignments respecting each person’s remaining capacity.'}</div>
+      {staffing.proposal.assignments.length === 0 && <p className="l1-node-empty">No assignments proposed — everyone may be fully allocated, or there are no squads yet.</p>}
+      <div className="ai-staffing-list">
+        {staffing.proposal.assignments.map((assignment, index) => (
+          <label key={index} className={`ai-staffing-row ${staffing.selected.has(index) ? 'on' : ''}`}>
+            <input type="checkbox" checked={staffing.selected.has(index)} onChange={() => toggleAssignment(index)} />
+            <span className="ai-staffing-main"><strong>{assignment.staff_name}</strong> → {assignment.squad_name} <span className="ai-staffing-alloc">{Math.round(assignment.allocation_percent)}%</span></span>
+            <span className="ai-staffing-reason">{assignment.reason}</span>
+          </label>
+        ))}
+      </div>
+    </PlanningDialog>}
+
     {unitDialog && <PlanningDialog title={`${unitDialog.editing ? 'Edit' : 'Add'} ${unitDialog.draft.unit_type}`} onClose={() => setUnitDialog(null)}
       actions={<><button className="m3-btn text" onClick={() => setUnitDialog(null)}>Cancel</button><button className="m3-btn filled" disabled={busy || !unitDialog.draft.name.trim()} onClick={saveUnit}>Save team</button></>}>
       {!unitDialog.editing && <div className="m3-radio-row">

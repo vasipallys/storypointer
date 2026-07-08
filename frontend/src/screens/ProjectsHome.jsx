@@ -89,7 +89,7 @@ function ProjectCard({ project, onOpen, onDelete }) {
   )
 }
 
-export default function ProjectsHome({ onOpen, onNew, onQuick }) {
+export default function ProjectsHome({ onOpen, onNew, onQuick, canCreate = true }) {
   const [projects, setProjects] = useState(null)
   const [error, setError] = useState(null)
 
@@ -122,7 +122,7 @@ export default function ProjectsHome({ onOpen, onNew, onQuick }) {
           <h2>Start your first platform</h2>
           <p>Create a platform, name its leads, and model your system as C4 to estimate from the architecture — or run a one-off Quick estimate for a single story.</p>
           <div className="proj-empty-actions">
-            <button className="m3-btn filled" onClick={onNew}><Plus size={16} /> New platform</button>
+            {canCreate && <button className="m3-btn filled" onClick={onNew}><Plus size={16} /> New platform</button>}
             <button className="m3-btn text" onClick={onQuick}><Zap size={16} /> Quick estimate</button>
           </div>
         </div>
@@ -133,7 +133,7 @@ export default function ProjectsHome({ onOpen, onNew, onQuick }) {
           {(projects || []).map((project) => (
             <ProjectCard key={project.id} project={project} onOpen={onOpen} onDelete={remove} />
           ))}
-          {projects && (
+          {projects && canCreate && (
             <button className="proj-add-card" onClick={onNew}>
               <span className="proj-add-icon"><Plus size={22} /></span>
               <strong>New platform</strong>
@@ -143,7 +143,7 @@ export default function ProjectsHome({ onOpen, onNew, onQuick }) {
         </div>
       )}
 
-      <button className="m3-fab" onClick={onNew}><Plus size={20} /> New platform</button>
+      {canCreate && <button className="m3-fab" onClick={onNew}><Plus size={20} /> New platform</button>}
     </div>
   )
 }

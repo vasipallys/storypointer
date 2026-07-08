@@ -448,7 +448,9 @@ body.dockable-resizing { cursor: col-resize; user-select: none; }
 /* ── Diagram studio (full-screen WYSIWYG + text + properties) ───────────── */
 .ds-scrim { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; padding: 24px; background: rgba(15, 28, 46, .5); backdrop-filter: blur(3px); }
 .ds-modal { width: min(1440px, 97vw); height: min(920px, 94vh); display: flex; flex-direction: column; overflow: hidden; background: var(--m3-surface); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.32); }
-.ds-topbar { display: flex; align-items: center; gap: 12px; flex: none; flex-wrap: wrap; padding: 12px 16px; border-bottom: 1px solid var(--m3-outline-variant); background: var(--m3-surface-container); }
+.ds-topbar { display: flex; align-items: center; gap: 12px; flex: none; flex-wrap: nowrap; padding: 12px 16px; border-bottom: 1px solid var(--m3-outline-variant); background: var(--m3-surface-container); }
+.ds-topbar-main { display: flex; align-items: center; gap: 12px; flex: 1 1 auto; flex-wrap: wrap; min-width: 0; }
+.ds-topbar-actions { display: flex; align-items: center; gap: 12px; flex: none; margin-left: auto; }
 .ds-brand { display: inline-flex; align-items: center; gap: 8px; color: var(--m3-primary); font: 600 14px 'Roboto'; white-space: nowrap; }
 .ds-title-input { flex: 1; min-width: 120px; height: 36px; padding: 0 12px; border: 1px solid var(--m3-outline-variant); border-radius: 9px; background: var(--m3-surface); font: 500 15px 'Roboto'; }
 .ds-topbar select { height: 34px; padding: 0 28px 0 10px; border: 1px solid var(--m3-outline-variant); border-radius: 8px; background: var(--m3-surface); font: 500 13px 'Roboto'; }

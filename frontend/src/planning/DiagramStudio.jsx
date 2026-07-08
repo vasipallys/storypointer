@@ -147,6 +147,18 @@ export default function DiagramStudio({ diagram, onClose, onSave, onAssist, savi
   const modelRef = useRef(model)
   useEffect(() => { modelRef.current = model }, [model])
 
+  // Escape closes the assistant first, then the studio — a guaranteed way out
+  // regardless of how the toolbar wraps at smaller widths.
+  useEffect(() => {
+    const onKey = (event) => {
+      if (event.key !== 'Escape') return
+      if (chatOpen) setChatOpen(false)
+      else onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [chatOpen, onClose])
+
   const dirty = draft.title !== diagram.title
     || draft.diagram_type !== diagram.diagram_type
     || draft.mermaid_source !== diagram.mermaid_source
@@ -324,22 +336,26 @@ export default function DiagramStudio({ diagram, onClose, onSave, onAssist, savi
   }
 
   return (
-    <div className="ds-scrim" role="dialog" aria-modal="true" aria-label="Diagram studio">
-      <div className="ds-modal" onClick={(event) => event.stopPropagation()}>
+    <div className="ds-scrim" role="dialog" aria-modal="true" aria-label="Diagram studio" onMouseDown={onClose}>
+      <div className="ds-modal" onMouseDown={(event) => event.stopPropagation()}>
         <header className="ds-topbar">
-          <span className="ds-brand"><Blocks size={18} /> Diagram studio</span>
-          <input className="ds-title-input" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} aria-label="Diagram name" />
-          <select value={draft.diagram_type} onChange={(event) => setDraft({ ...draft, diagram_type: event.target.value })} aria-label="Diagram type">
-            <DiagramTypeOptions />
-          </select>
-          <div className="ds-mode-toggle">
-            <button className={mode === 'visual' ? 'active' : ''} onClick={() => changeMode('visual')}><MousePointerSquareDashed size={14} /> Visual</button>
-            <button className={mode === 'text' ? 'active' : ''} onClick={() => changeMode('text')}><FileCode2 size={14} /> Text</button>
+          <div className="ds-topbar-main">
+            <span className="ds-brand"><Blocks size={18} /> Diagram studio</span>
+            <input className="ds-title-input" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} aria-label="Diagram name" />
+            <select value={draft.diagram_type} onChange={(event) => setDraft({ ...draft, diagram_type: event.target.value })} aria-label="Diagram type">
+              <DiagramTypeOptions />
+            </select>
+            <div className="ds-mode-toggle">
+              <button className={mode === 'visual' ? 'active' : ''} onClick={() => changeMode('visual')}><MousePointerSquareDashed size={14} /> Visual</button>
+              <button className={mode === 'text' ? 'active' : ''} onClick={() => changeMode('text')}><FileCode2 size={14} /> Text</button>
+            </div>
+            <span className="ds-dirty">{dirty ? 'Unsaved' : 'Saved'}</span>
           </div>
-          <span className="ds-dirty">{dirty ? 'Unsaved' : 'Saved'}</span>
-          {onAssist && <button className={`m3-btn small ${chatOpen ? 'filled' : 'tonal'}`} onClick={() => setChatOpen((open) => !open)}><MessageSquare size={14} /> Assistant</button>}
-          <button className="m3-btn filled small" onClick={save} disabled={saving || !dirty}><Save size={14} /> Save</button>
-          <button className="m3-icon-btn" onClick={onClose} aria-label="Close studio"><X size={18} /></button>
+          <div className="ds-topbar-actions">
+            {onAssist && <button className={`m3-btn small ${chatOpen ? 'filled' : 'tonal'}`} onClick={() => setChatOpen((open) => !open)}><MessageSquare size={14} /> Assistant</button>}
+            <button className="m3-btn filled small" onClick={save} disabled={saving || !dirty}><Save size={14} /> Save</button>
+            <button className="m3-icon-btn" onClick={onClose} aria-label="Close studio"><X size={18} /></button>
+          </div>
         </header>
 
         {mode === 'visual' && (
