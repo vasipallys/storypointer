@@ -24,7 +24,7 @@ import {
 } from 'lucide-react'
 import mermaid from 'mermaid'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { DIAGRAM_TYPE_GROUPS } from './diagramCatalog'
+import { DIAGRAM_TYPE_GROUPS, DIAGRAM_TYPES, getDiagramType } from './diagramCatalog'
 import { DIRECTIONS, EDGE_TYPES, modelToMermaid, NODE_SHAPES, nextNodeId, parseFlowchart } from './mermaidModel'
 
 mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'base', themeVariables: { primaryColor: '#d3e3fd', primaryTextColor: '#1f1f1f', primaryBorderColor: '#0b57d0', lineColor: '#5f6368', secondaryColor: '#e6f4ea', tertiaryColor: '#fef7e0', fontFamily: 'Roboto, sans-serif' } })
@@ -297,6 +297,28 @@ export default function DiagramStudio({ diagram, onClose, onSave, onAssist, savi
     applyModel((current) => ({ ...current, direction }))
     setMetadata((current) => ({ ...current, positions: {} }))
   }
+  // Switching type loads that type's starter template so the diagram actually
+  // reflects the new type. Untouched diagrams (empty or an unedited template)
+  // swap silently; edited ones ask before replacing the body.
+  const changeDiagramType = (nextType) => {
+    if (nextType === draft.diagram_type) return
+    const meta = getDiagramType(nextType)
+    const template = (meta?.template || '').trim()
+    const currentSource = (draft.mermaid_source || '').trim()
+    const untouched = !currentSource || DIAGRAM_TYPES.some((type) => (type.template || '').trim() === currentSource)
+    let nextSource = draft.mermaid_source
+    if (template && (untouched || window.confirm(`Load the ${meta.label} starter template? This replaces the current diagram body.`))) {
+      nextSource = meta.template
+    }
+    const parsed = parseFlowchart(nextSource)
+    modelRef.current = parsed
+    setModel(parsed)
+    if (nextSource !== draft.mermaid_source) setMetadata({ nodes: {}, positions: {} })
+    setSelection(parsed.supported && parsed.nodes[0] ? { kind: 'node', id: parsed.nodes[0].id } : null)
+    setDraft((current) => ({ ...current, diagram_type: nextType, mermaid_source: nextSource }))
+    textDirty.current = false
+    setMode(parsed.supported ? 'visual' : 'text')
+  }
   const changeMode = (nextMode) => {
     if (nextMode === 'visual' && textDirty.current) {
       const parsed = parseFlowchart(draft.mermaid_source)
@@ -342,7 +364,7 @@ export default function DiagramStudio({ diagram, onClose, onSave, onAssist, savi
           <div className="ds-topbar-main">
             <span className="ds-brand"><Blocks size={18} /> Diagram studio</span>
             <input className="ds-title-input" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} aria-label="Diagram name" />
-            <select value={draft.diagram_type} onChange={(event) => setDraft({ ...draft, diagram_type: event.target.value })} aria-label="Diagram type">
+            <select value={draft.diagram_type} onChange={(event) => changeDiagramType(event.target.value)} aria-label="Diagram type">
               <DiagramTypeOptions />
             </select>
             <div className="ds-mode-toggle">
