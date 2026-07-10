@@ -1,4 +1,4 @@
-import { BrainCircuit, ChevronDown, LogOut, Server, ShieldCheck } from 'lucide-react'
+import { BookOpen, BrainCircuit, ChevronDown, LogOut, Server, ShieldCheck } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { api } from './api/client'
 import { useAuth } from './auth/AuthContext'
@@ -79,6 +79,7 @@ export default function App() {
       <nav className="m3-topbar-nav">
         <button className={route.name === 'home' || route.name === 'project' || route.name === 'wizard' ? 'active' : ''} onClick={() => go('home')}>Platforms</button>
         {showAdmin && <button className={route.name === 'admin' ? 'active' : ''} onClick={() => go('admin')}><ShieldCheck size={14} /> Admin</button>}
+        <a className="m3-topbar-link" href="/help/guide.html" target="_blank" rel="noreferrer" title="Open the interactive user guide in a new tab"><BookOpen size={14} /> Guide</a>
       </nav>
       <div className="m3-topbar-status">
         <span className="m3-chip"><Server size={13} />{config ? (config.llm.provider ? `${config.llm.provider} · ${config.llm.model}` : 'LLM not configured') : 'Checking model…'}</span>

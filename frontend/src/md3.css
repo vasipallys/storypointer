@@ -752,6 +752,8 @@ body.dockable-resizing { cursor: col-resize; user-select: none; }
 .m3-topbar-nav button { display: inline-flex; align-items: center; gap: 6px; border: 0; background: none; font: inherit; font-size: 13px; color: var(--m3-on-surface-variant); padding: 7px 14px; border-radius: 999px; cursor: pointer; }
 .m3-topbar-nav button:hover { background: var(--m3-surface-container-high); }
 .m3-topbar-nav button.active { background: var(--m3-secondary-container); color: var(--m3-on-secondary-container); }
+.m3-topbar-link { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 13px; color: var(--m3-on-surface-variant); padding: 7px 14px; border-radius: 999px; text-decoration: none; }
+.m3-topbar-link:hover { background: var(--m3-surface-container-high); color: var(--m3-primary); }
 
 /* ---- Resource directory ---- */
 .res-screen { display: flex; flex-direction: column; gap: 18px; }

@@ -4,6 +4,8 @@ Story Pointer is an evidence-led story-point estimator for React/Spring teams in
 
 Around that estimator sits a **project workspace**: create a project, link a code repo and a Jira project, model the system as an interactive **C4 diagram** (Material 3 UI, React Flow canvas), estimate the L3 components as stories with the architecture as evidence, and watch points roll up deterministically to epics (L2) and initiatives (L1).
 
+> 📖 **New here?** The [**User Guide**](docs/user-guide.md) is a step-by-step walkthrough of every feature — modelling, estimating, planning, governance, the workflow guide, the assistant, and admin.
+
 ## Architecture
 
 - **Frontend:** React 19, Vite, Material 3 shell, React Flow C4 canvas, `react-markdown`/GFM requirement documents, Mermaid 11 rendering, an editable diagram studio, and incremental SSE consumption.
