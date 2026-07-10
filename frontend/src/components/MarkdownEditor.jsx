@@ -22,6 +22,7 @@ import mermaid from 'mermaid'
 import { Children, forwardRef, isValidElement, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import MermaidView from './MermaidView'
 
 mermaid.initialize({
   startOnLoad: false,
@@ -76,27 +77,7 @@ export function findMermaidBlocks(markdown) {
 }
 
 function MermaidMarkdownBlock({ source, index, onEdit }) {
-  const target = useRef(null)
   const [mode, setMode] = useState('visual')
-  const [error, setError] = useState(null)
-
-  useEffect(() => {
-    if (mode !== 'visual') return undefined
-    let active = true
-    const timer = setTimeout(async () => {
-      try {
-        const id = `markdown-mermaid-${Date.now()}-${Math.random().toString(16).slice(2)}`
-        const { svg, bindFunctions } = await mermaid.render(id, source)
-        if (!active || !target.current) return
-        target.current.innerHTML = svg
-        bindFunctions?.(target.current)
-        setError(null)
-      } catch (nextError) {
-        if (active) setError(nextError)
-      }
-    }, 120)
-    return () => { active = false; clearTimeout(timer) }
-  }, [source, mode])
 
   return (
     <section className="md-mermaid-card">
@@ -111,9 +92,7 @@ function MermaidMarkdownBlock({ source, index, onEdit }) {
       </header>
       {mode === 'source'
         ? <pre><code>{source}</code></pre>
-        : error
-          ? <div className="md-mermaid-error"><strong>Diagram needs attention</strong><span>{String(error.message || error).split('\n')[0]}</span></div>
-          : <div ref={target} className="md-mermaid-visual" />}
+        : <MermaidView source={source} fit="width" className="md-mermaid-visual" />}
     </section>
   )
 }

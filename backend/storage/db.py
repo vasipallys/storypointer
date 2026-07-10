@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS projects (
   name TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   leads TEXT NOT NULL DEFAULT '[]',
+  sensitivity TEXT NOT NULL DEFAULT 'standard' CHECK (sensitivity IN ('standard','restricted')),
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS repo_links (
@@ -262,6 +263,310 @@ CREATE INDEX IF NOT EXISTS idx_l1_requirements_element ON l1_requirement_documen
 CREATE INDEX IF NOT EXISTS idx_l1_requirement_versions_doc ON l1_requirement_versions(document_id);
 CREATE INDEX IF NOT EXISTS idx_l1_requirement_comments_doc ON l1_requirement_comments(document_id);
 CREATE INDEX IF NOT EXISTS idx_l1_requirement_audit_doc ON l1_requirement_audit(document_id);
+CREATE TABLE IF NOT EXISTS l1_vision (
+  l1_element_id TEXT PRIMARY KEY REFERENCES c4_elements(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  vision_statement TEXT NOT NULL DEFAULT '',
+  business_problem TEXT NOT NULL DEFAULT '',
+  target_users TEXT NOT NULL DEFAULT '',
+  vision_statement_details TEXT NOT NULL DEFAULT '',
+  business_problem_details TEXT NOT NULL DEFAULT '',
+  target_users_details TEXT NOT NULL DEFAULT '',
+  strategic_theme TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','approved','baselined','archived')),
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l1_okrs (
+  id TEXT PRIMARY KEY,
+  l1_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  linked_element_id TEXT REFERENCES c4_elements(id) ON DELETE SET NULL,
+  objective TEXT NOT NULL,
+  key_result TEXT NOT NULL DEFAULT '',
+  metric_name TEXT NOT NULL DEFAULT '',
+  baseline_value TEXT NOT NULL DEFAULT '',
+  target_value TEXT NOT NULL DEFAULT '',
+  current_value TEXT NOT NULL DEFAULT '',
+  owner TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'on_track' CHECK (status IN ('on_track','at_risk','off_track','done')),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l1_stakeholders (
+  id TEXT PRIMARY KEY,
+  l1_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  resource_staff_id TEXT REFERENCES resource_staff(id) ON DELETE SET NULL,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL DEFAULT '',
+  department TEXT NOT NULL DEFAULT '',
+  role TEXT NOT NULL DEFAULT '',
+  stakeholder_type TEXT NOT NULL DEFAULT 'internal' CHECK (stakeholder_type IN ('internal','external','vendor','regulator')),
+  influence TEXT NOT NULL DEFAULT 'medium' CHECK (influence IN ('high','medium','low')),
+  interest TEXT NOT NULL DEFAULT 'medium' CHECK (interest IN ('high','medium','low')),
+  raci TEXT NOT NULL DEFAULT 'Informed' CHECK (raci IN ('Responsible','Accountable','Consulted','Informed')),
+  owns TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','inactive','replaced')),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l1_capabilities (
+  id TEXT PRIMARY KEY,
+  l1_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  parent_id TEXT REFERENCES l1_capabilities(id) ON DELETE CASCADE,
+  linked_element_id TEXT REFERENCES c4_elements(id) ON DELETE SET NULL,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  cap_level TEXT NOT NULL DEFAULT 'L1' CHECK (cap_level IN ('L1','L2','L3')),
+  business_owner TEXT NOT NULL DEFAULT '',
+  technology_owner TEXT NOT NULL DEFAULT '',
+  criticality TEXT NOT NULL DEFAULT 'medium' CHECK (criticality IN ('high','medium','low')),
+  current_maturity INTEGER NOT NULL DEFAULT 1 CHECK (current_maturity BETWEEN 1 AND 5),
+  target_maturity INTEGER NOT NULL DEFAULT 3 CHECK (target_maturity BETWEEN 1 AND 5),
+  strategic_priority TEXT NOT NULL DEFAULT 'medium' CHECK (strategic_priority IN ('high','medium','low')),
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','planned','retired')),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l1_risks (
+  id TEXT PRIMARY KEY,
+  l1_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  linked_element_id TEXT REFERENCES c4_elements(id) ON DELETE SET NULL,
+  title TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'delivery' CHECK (category IN ('delivery','architecture','security','compliance','operational','financial')),
+  risk_level TEXT NOT NULL DEFAULT 'medium' CHECK (risk_level IN ('high','medium','low')),
+  owner TEXT NOT NULL DEFAULT '',
+  mitigation TEXT NOT NULL DEFAULT '',
+  funding_source TEXT NOT NULL DEFAULT '',
+  approved_budget REAL NOT NULL DEFAULT 0 CHECK (approved_budget >= 0),
+  forecast_spend REAL NOT NULL DEFAULT 0 CHECK (forecast_spend >= 0),
+  actual_spend REAL NOT NULL DEFAULT 0 CHECK (actual_spend >= 0),
+  status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','approved','active','blocked','completed')),
+  target_date TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l1_approvals (
+  id TEXT PRIMARY KEY,
+  l1_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  stage TEXT NOT NULL CHECK (stage IN ('product','architecture','security','risk','finance','sponsor')),
+  ordinal INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+  decided_by TEXT,
+  decided_at TEXT,
+  comment TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE (l1_element_id, stage)
+);
+CREATE TABLE IF NOT EXISTS l1_comments (
+  id TEXT PRIMARY KEY,
+  l1_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  artifact_type TEXT NOT NULL DEFAULT 'baseline',
+  artifact_id TEXT,
+  body TEXT NOT NULL,
+  author TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved')),
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_l1_comments_element ON l1_comments(l1_element_id);
+CREATE INDEX IF NOT EXISTS idx_l1_approvals_element ON l1_approvals(l1_element_id);
+CREATE TABLE IF NOT EXISTS l2_arch (
+  l2_element_id TEXT PRIMARY KEY REFERENCES c4_elements(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  summary TEXT NOT NULL DEFAULT '',
+  container_diagram TEXT NOT NULL DEFAULT '',
+  raci TEXT NOT NULL DEFAULT '{{}}',
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','reviewed','approved','baselined','archived')),
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l2_approvals (
+  id TEXT PRIMARY KEY,
+  l2_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  stage TEXT NOT NULL CHECK (stage IN ('engineering','security','nfr','data','architecture','sponsor')),
+  ordinal INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+  decided_by TEXT,
+  decided_at TEXT,
+  comment TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE (l2_element_id, stage)
+);
+CREATE INDEX IF NOT EXISTS idx_l2_approvals_element ON l2_approvals(l2_element_id);
+CREATE TABLE IF NOT EXISTS l2_containers (
+  id TEXT PRIMARY KEY,
+  l2_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  capability TEXT NOT NULL DEFAULT '',
+  responsibilities TEXT NOT NULL DEFAULT '',
+  owns_data TEXT NOT NULL DEFAULT '',
+  owner_team TEXT NOT NULL DEFAULT '',
+  security_classification TEXT NOT NULL DEFAULT 'internal' CHECK (security_classification IN ('public','internal','confidential','restricted')),
+  nfr_criticality TEXT NOT NULL DEFAULT 'medium' CHECK (nfr_criticality IN ('high','medium','low')),
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','planned','retired')),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l2_apis (
+  id TEXT PRIMARY KEY,
+  l2_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT '',
+  consumer TEXT NOT NULL DEFAULT '',
+  endpoint TEXT NOT NULL DEFAULT '',
+  api_type TEXT NOT NULL DEFAULT 'REST' CHECK (api_type IN ('REST','GraphQL','gRPC','Event','Batch','File')),
+  data_classification TEXT NOT NULL DEFAULT 'internal' CHECK (data_classification IN ('public','internal','confidential','restricted')),
+  authentication TEXT NOT NULL DEFAULT '',
+  version TEXT NOT NULL DEFAULT 'v1',
+  owner TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','active','deprecated')),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l2_nfrs (
+  id TEXT PRIMARY KEY,
+  l2_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'performance' CHECK (category IN ('performance','security','availability','scalability','privacy','resilience')),
+  scenario TEXT NOT NULL DEFAULT '',
+  metric TEXT NOT NULL DEFAULT '',
+  baseline TEXT NOT NULL DEFAULT '',
+  target TEXT NOT NULL DEFAULT '',
+  owner TEXT NOT NULL DEFAULT '',
+  risk_level TEXT NOT NULL DEFAULT 'medium' CHECK (risk_level IN ('high','medium','low')),
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','met','at_risk')),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l2_integrations (
+  id TEXT PRIMARY KEY,
+  l2_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  source_system TEXT NOT NULL DEFAULT '',
+  target_system TEXT NOT NULL DEFAULT '',
+  integration_type TEXT NOT NULL DEFAULT 'API' CHECK (integration_type IN ('API','Event','Batch','File','UI','Manual')),
+  data_exchanged TEXT NOT NULL DEFAULT '',
+  security_method TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'planned' CHECK (status IN ('planned','active','blocked','done')),
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_l2_containers_element ON l2_containers(l2_element_id);
+CREATE INDEX IF NOT EXISTS idx_l2_apis_element ON l2_apis(l2_element_id);
+CREATE INDEX IF NOT EXISTS idx_l2_nfrs_element ON l2_nfrs(l2_element_id);
+CREATE INDEX IF NOT EXISTS idx_l2_integrations_element ON l2_integrations(l2_element_id);
+CREATE TABLE IF NOT EXISTS l3_arch (
+  l3_element_id TEXT PRIMARY KEY REFERENCES c4_elements(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  summary TEXT NOT NULL DEFAULT '',
+  component_diagram TEXT NOT NULL DEFAULT '',
+  raci TEXT NOT NULL DEFAULT '{{}}',
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','reviewed','approved','baselined','archived')),
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l3_approvals (
+  id TEXT PRIMARY KEY,
+  l3_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  stage TEXT NOT NULL CHECK (stage IN ('design','interfaces','security','testing','architecture','tech_lead')),
+  ordinal INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+  decided_by TEXT,
+  decided_at TEXT,
+  comment TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE (l3_element_id, stage)
+);
+CREATE INDEX IF NOT EXISTS idx_l3_approvals_element ON l3_approvals(l3_element_id);
+CREATE TABLE IF NOT EXISTS l3_components (
+  id TEXT PRIMARY KEY,
+  l3_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  component_type TEXT NOT NULL DEFAULT 'service' CHECK (component_type IN ('controller','service','repository','gateway','model','client','config','ui','other')),
+  responsibilities TEXT NOT NULL DEFAULT '',
+  tech TEXT NOT NULL DEFAULT '',
+  pattern TEXT NOT NULL DEFAULT '',
+  owner TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','planned','retired')),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l3_interfaces (
+  id TEXT PRIMARY KEY,
+  l3_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  direction TEXT NOT NULL DEFAULT 'provided' CHECK (direction IN ('provided','consumed')),
+  interface_type TEXT NOT NULL DEFAULT 'REST' CHECK (interface_type IN ('REST','GraphQL','gRPC','Event','Function','Message')),
+  contract TEXT NOT NULL DEFAULT '',
+  counterpart TEXT NOT NULL DEFAULT '',
+  authentication TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','active','deprecated')),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l3_dependencies (
+  id TEXT PRIMARY KEY,
+  l3_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  dependency_type TEXT NOT NULL DEFAULT 'internal' CHECK (dependency_type IN ('internal','container','external','library')),
+  target TEXT NOT NULL DEFAULT '',
+  reason TEXT NOT NULL DEFAULT '',
+  criticality TEXT NOT NULL DEFAULT 'medium' CHECK (criticality IN ('high','medium','low')),
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','planned','retired')),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l3_concerns (
+  id TEXT PRIMARY KEY,
+  l3_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'security' CHECK (category IN ('logging','caching','validation','security','error_handling','config','observability','resilience')),
+  approach TEXT NOT NULL DEFAULT '',
+  owner TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'planned' CHECK (status IN ('planned','implemented','gap')),
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_l3_components_element ON l3_components(l3_element_id);
+CREATE INDEX IF NOT EXISTS idx_l3_interfaces_element ON l3_interfaces(l3_element_id);
+CREATE INDEX IF NOT EXISTS idx_l3_dependencies_element ON l3_dependencies(l3_element_id);
+CREATE INDEX IF NOT EXISTS idx_l3_concerns_element ON l3_concerns(l3_element_id);
+CREATE TABLE IF NOT EXISTS l4_arch (
+  l4_element_id TEXT PRIMARY KEY REFERENCES c4_elements(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  summary TEXT NOT NULL DEFAULT '',
+  code_diagram TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','reviewed','approved','done','archived')),
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l4_code_units (
+  id TEXT PRIMARY KEY,
+  l4_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  unit_type TEXT NOT NULL DEFAULT 'class' CHECK (unit_type IN ('class','interface','function','module','config','migration','test')),
+  responsibility TEXT NOT NULL DEFAULT '',
+  tech TEXT NOT NULL DEFAULT '',
+  path TEXT NOT NULL DEFAULT '',
+  complexity TEXT NOT NULL DEFAULT 'medium' CHECK (complexity IN ('high','medium','low')),
+  status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo','in_progress','done')),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l4_test_cases (
+  id TEXT PRIMARY KEY,
+  l4_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  test_type TEXT NOT NULL DEFAULT 'unit' CHECK (test_type IN ('unit','integration','e2e','contract','manual')),
+  scenario TEXT NOT NULL DEFAULT '',
+  expected TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'planned' CHECK (status IN ('planned','passing','failing')),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS l4_checklist (
+  id TEXT PRIMARY KEY,
+  l4_element_id TEXT NOT NULL REFERENCES c4_elements(id) ON DELETE CASCADE,
+  item TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'code' CHECK (category IN ('code','tests','docs','security','review','deploy')),
+  done INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_l4_code_units_element ON l4_code_units(l4_element_id);
+CREATE INDEX IF NOT EXISTS idx_l4_test_cases_element ON l4_test_cases(l4_element_id);
+CREATE INDEX IF NOT EXISTS idx_l4_checklist_element ON l4_checklist(l4_element_id);
+CREATE TABLE IF NOT EXISTS integration_configs (
+  connector_key TEXT PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 0,
+  settings TEXT NOT NULL DEFAULT '{{}}',
+  updated_at TEXT,
+  updated_by TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_l1_okrs_element ON l1_okrs(l1_element_id);
+CREATE INDEX IF NOT EXISTS idx_l1_stakeholders_element ON l1_stakeholders(l1_element_id);
+CREATE INDEX IF NOT EXISTS idx_l1_capabilities_element ON l1_capabilities(l1_element_id);
+CREATE INDEX IF NOT EXISTS idx_l1_risks_element ON l1_risks(l1_element_id);
 """
 
 _initialized: set[str] = set()
@@ -347,8 +652,16 @@ def init_db(path: Path | None = None) -> None:
         conn.executescript(_SCHEMA)
         _ensure_columns(conn, "l1_diagrams", {"metadata": "TEXT NOT NULL DEFAULT '{}'"})
         _ensure_l1_diagram_type_check(conn)
-        _ensure_columns(conn, "projects", {"leads": "TEXT NOT NULL DEFAULT '[]'"})
+        _ensure_columns(conn, "projects", {"leads": "TEXT NOT NULL DEFAULT '[]'", "sensitivity": "TEXT NOT NULL DEFAULT 'standard'"})
         _ensure_columns(conn, "l1_team_members", {"resource_staff_id": "TEXT REFERENCES resource_staff(id) ON DELETE SET NULL"})
+        for table in ("l1_okrs", "l1_capabilities", "l1_risks"):
+            _ensure_columns(conn, table, {"linked_element_id": "TEXT REFERENCES c4_elements(id) ON DELETE SET NULL"})
+        _ensure_columns(conn, "l1_vision", {
+            "vision_statement_details": "TEXT NOT NULL DEFAULT ''",
+            "business_problem_details": "TEXT NOT NULL DEFAULT ''",
+            "target_users_details": "TEXT NOT NULL DEFAULT ''",
+        })
+        _ensure_columns(conn, "l2_arch", {"raci": "TEXT NOT NULL DEFAULT '{}'"})
         _seed_resource_lookups(conn)
     _initialized.add(str(target))
 

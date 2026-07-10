@@ -8,7 +8,8 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from backend.ai.schemas import C4Scaffold, NarrativeOutput, StaffingProposal, StoryDecomposition
+from backend.ai.masking import mask_pii
+from backend.ai.schemas import C4Scaffold, FieldSummary, L1BaselineDraft, L2Draft, L3Draft, L4Draft, NarrativeOutput, OrchestratorPlan, StaffingProposal, StoryDecomposition
 from backend.c4 import store as c4_store
 from backend.graph.nodes import _parse_structured_result
 from backend.llm.factory import get_structured_llm
@@ -169,7 +170,7 @@ async def decompose_element(project_id: str, element_id: str, guidance: str = ""
         f"ELEMENT ({element['level']}): {element['name']}\n"
         f"DESCRIPTION: {element.get('description') or '(none provided)'}\n"
         f"TECH: {element.get('tech') or '(unspecified)'}\n"
-        + (f"EXTRA GUIDANCE: {guidance}\n" if guidance.strip() else "")
+        + (f"EXTRA GUIDANCE: {mask_pii(guidance)}\n" if guidance.strip() else "")
         + "\nPropose the child stories that fully deliver this scope."
     )
     return await _invoke(StoryDecomposition, _DECOMPOSE_SYSTEM, human)
@@ -210,9 +211,281 @@ _SCAFFOLD_SYSTEM = (
 async def scaffold_c4(project_id: str, description: str) -> C4Scaffold:
     human = (
         "Turn this description into a C4 model (one L1 system, L2 containers, L3 components + relations).\n\n"
-        f"DESCRIPTION:\n{description.strip()}"
+        f"DESCRIPTION:\n{mask_pii(description.strip())}"
     )
     return await _invoke(C4Scaffold, _SCAFFOLD_SYSTEM, human)
+
+
+# ---- L1 architecture baseline generator ---------------------------------
+
+_L1_BASELINE_SYSTEM = (
+    "You are an enterprise architect drafting an L1 architecture baseline from a brief.\n"
+    "Produce: a crisp vision statement, the business problem, target users, 2-4 OKRs with measurable "
+    "key results and targets, the key internal/external stakeholders with RACI (exactly one Accountable), "
+    "the top business capabilities, and the main portfolio risks with mitigations and a funding source.\n"
+    "Be specific to the brief; do not invent unrelated systems."
+)
+
+
+async def generate_l1_baseline(project_id: str, l1_element_id: str, brief: str) -> L1BaselineDraft:
+    element = c4_store.get_element(project_id, l1_element_id)
+    human = (
+        f"L1 INITIATIVE: {element['name']}\n"
+        f"EXISTING DESCRIPTION: {element.get('description') or '(none)'}\n\n"
+        f"BRIEF:\n{mask_pii(brief.strip()) or '(use the initiative name and description)'}\n\n"
+        "Draft the L1 architecture baseline."
+    )
+    return await _invoke(L1BaselineDraft, _L1_BASELINE_SYSTEM, human)
+
+
+# ---- L2 container-architecture generator --------------------------------
+
+_L2_SYSTEM = (
+    "You are an L2 container-architecture assistant. From the L1 context and a brief, draft the "
+    "container architecture for one epic/platform slice.\n"
+    "Produce: a short summary, a C4-style Mermaid container diagram (flowchart LR), the containers "
+    "(with capability, responsibilities, owner team, security classification), the API/data contracts "
+    "(provider, consumer, type, data classification, auth), the key NFRs (with metric + target), and the "
+    "main integrations. Link to the L1 capability where possible; mark unknowns rather than inventing systems."
+)
+
+
+async def generate_l2_baseline(project_id: str, l2_element_id: str, brief: str) -> L2Draft:
+    element = c4_store.get_element(project_id, l2_element_id)
+    parent_name = ""
+    if element.get("parent_id"):
+        try:
+            parent_name = c4_store.get_element(project_id, element["parent_id"])["name"]
+        except Exception:
+            parent_name = ""
+    human = (
+        f"L2 EPIC/CONTAINER SLICE: {element['name']}\n"
+        f"PARENT L1 INITIATIVE: {parent_name or '(none)'}\n"
+        f"EXISTING DESCRIPTION: {element.get('description') or '(none)'}\n\n"
+        f"BRIEF:\n{mask_pii(brief.strip()) or '(use the element name and description)'}\n\n"
+        "Draft the L2 container architecture."
+    )
+    return await _invoke(L2Draft, _L2_SYSTEM, human)
+
+
+def apply_l2_baseline(project_id: str, l2_element_id: str, draft: dict[str, Any], sections: list[str] | None = None) -> dict[str, Any]:
+    from backend.l2arch import store as l2_store
+    from backend.l2arch.models import ApiCreate, ContainerCreate, IntegrationCreate, L2Update, NfrCreate
+
+    wanted = set(sections or ["summary", "containers", "apis", "nfrs", "integrations"])
+    result: dict[str, int] = {}
+    if "summary" in wanted and (draft.get("summary") or draft.get("container_diagram")):
+        l2_store.update_l2(project_id, l2_element_id, L2Update(
+            summary=draft.get("summary", ""), container_diagram=draft.get("container_diagram", ""),
+        ))
+        result["summary"] = 1
+    if "containers" in wanted:
+        for item in draft.get("containers", []):
+            l2_store.create_container(project_id, l2_element_id, ContainerCreate(**item))
+        result["containers"] = len(draft.get("containers", []))
+    if "apis" in wanted:
+        for item in draft.get("apis", []):
+            l2_store.create_api(project_id, l2_element_id, ApiCreate(**item))
+        result["apis"] = len(draft.get("apis", []))
+    if "nfrs" in wanted:
+        for item in draft.get("nfrs", []):
+            l2_store.create_nfr(project_id, l2_element_id, NfrCreate(**item))
+        result["nfrs"] = len(draft.get("nfrs", []))
+    if "integrations" in wanted:
+        for item in draft.get("integrations", []):
+            l2_store.create_integration(project_id, l2_element_id, IntegrationCreate(**item))
+        result["integrations"] = len(draft.get("integrations", []))
+    return result
+
+
+# ---- L3 component-architecture generator --------------------------------
+
+_L3_SYSTEM = (
+    "You are an L3 component-architecture assistant. From the L2 container context and a brief, draft the "
+    "internal component design for one component/story.\n"
+    "Produce: a short summary, a Mermaid component diagram (flowchart TB), the internal components "
+    "(with type — controller/service/repository/gateway/model/client — responsibilities, tech and design "
+    "pattern), the provided/consumed interfaces (with contract + auth), the dependencies (internal/container/"
+    "external/library), and the cross-cutting design concerns (logging, caching, validation, security, error "
+    "handling). Keep it implementable; mark unknowns rather than inventing systems."
+)
+
+
+async def generate_l3_baseline(project_id: str, l3_element_id: str, brief: str) -> L3Draft:
+    element = c4_store.get_element(project_id, l3_element_id)
+    parent_name = ""
+    if element.get("parent_id"):
+        try:
+            parent_name = c4_store.get_element(project_id, element["parent_id"])["name"]
+        except Exception:
+            parent_name = ""
+    human = (
+        f"L3 COMPONENT/STORY: {element['name']}\n"
+        f"PARENT L2 CONTAINER: {parent_name or '(none)'}\n"
+        f"EXISTING DESCRIPTION: {element.get('description') or '(none)'}\n\n"
+        f"BRIEF:\n{mask_pii(brief.strip()) or '(use the element name and description)'}\n\n"
+        "Draft the L3 component architecture."
+    )
+    return await _invoke(L3Draft, _L3_SYSTEM, human)
+
+
+def apply_l3_baseline(project_id: str, l3_element_id: str, draft: dict[str, Any], sections: list[str] | None = None) -> dict[str, Any]:
+    from backend.l3arch import store as l3_store
+    from backend.l3arch.models import ComponentCreate, ConcernCreate, DependencyCreate, InterfaceCreate, L3Update
+
+    wanted = set(sections or ["summary", "components", "interfaces", "dependencies", "concerns"])
+    result: dict[str, int] = {}
+    if "summary" in wanted and (draft.get("summary") or draft.get("component_diagram")):
+        l3_store.update_l3(project_id, l3_element_id, L3Update(
+            summary=draft.get("summary", ""), component_diagram=draft.get("component_diagram", ""),
+        ))
+        result["summary"] = 1
+    if "components" in wanted:
+        for item in draft.get("components", []):
+            l3_store.create_component(project_id, l3_element_id, ComponentCreate(**item))
+        result["components"] = len(draft.get("components", []))
+    if "interfaces" in wanted:
+        for item in draft.get("interfaces", []):
+            l3_store.create_interface(project_id, l3_element_id, InterfaceCreate(**item))
+        result["interfaces"] = len(draft.get("interfaces", []))
+    if "dependencies" in wanted:
+        for item in draft.get("dependencies", []):
+            l3_store.create_dependency(project_id, l3_element_id, DependencyCreate(**item))
+        result["dependencies"] = len(draft.get("dependencies", []))
+    if "concerns" in wanted:
+        for item in draft.get("concerns", []):
+            l3_store.create_concern(project_id, l3_element_id, ConcernCreate(**item))
+        result["concerns"] = len(draft.get("concerns", []))
+    return result
+
+
+# ---- L4 implementation-detail generator ---------------------------------
+
+_L4_SYSTEM = (
+    "You are an L4 implementation assistant. From the L3 component context and a brief, draft the concrete "
+    "implementation plan for one task.\n"
+    "Produce: a short summary, a Mermaid class or sequence diagram, the code units (classes/interfaces/"
+    "functions/modules with responsibility, tech and complexity), the test cases (unit/integration/e2e with a "
+    "scenario and expected result), and a Definition-of-Done checklist (code, tests, docs, security, review, "
+    "deploy). Keep it concrete and buildable; do not invent unrelated files."
+)
+
+
+async def generate_l4_baseline(project_id: str, l4_element_id: str, brief: str) -> L4Draft:
+    element = c4_store.get_element(project_id, l4_element_id)
+    parent_name = ""
+    if element.get("parent_id"):
+        try:
+            parent_name = c4_store.get_element(project_id, element["parent_id"])["name"]
+        except Exception:
+            parent_name = ""
+    human = (
+        f"L4 TASK: {element['name']}\n"
+        f"PARENT L3 COMPONENT: {parent_name or '(none)'}\n"
+        f"EXISTING DESCRIPTION: {element.get('description') or '(none)'}\n\n"
+        f"BRIEF:\n{mask_pii(brief.strip()) or '(use the element name and description)'}\n\n"
+        "Draft the L4 implementation detail."
+    )
+    return await _invoke(L4Draft, _L4_SYSTEM, human)
+
+
+def apply_l4_baseline(project_id: str, l4_element_id: str, draft: dict[str, Any], sections: list[str] | None = None) -> dict[str, Any]:
+    from backend.l4arch import store as l4_store
+    from backend.l4arch.models import ChecklistCreate, CodeUnitCreate, L4Update, TestCaseCreate
+
+    wanted = set(sections or ["summary", "code_units", "test_cases", "checklist"])
+    result: dict[str, int] = {}
+    if "summary" in wanted and (draft.get("summary") or draft.get("code_diagram")):
+        l4_store.update_l4(project_id, l4_element_id, L4Update(
+            summary=draft.get("summary", ""), code_diagram=draft.get("code_diagram", ""),
+        ))
+        result["summary"] = 1
+    if "code_units" in wanted:
+        for item in draft.get("code_units", []):
+            l4_store.create_code_unit(project_id, l4_element_id, CodeUnitCreate(**item))
+        result["code_units"] = len(draft.get("code_units", []))
+    if "test_cases" in wanted:
+        for item in draft.get("test_cases", []):
+            l4_store.create_test_case(project_id, l4_element_id, TestCaseCreate(**item))
+        result["test_cases"] = len(draft.get("test_cases", []))
+    if "checklist" in wanted:
+        for item in draft.get("checklist", []):
+            l4_store.create_checklist_item(project_id, l4_element_id, ChecklistCreate(**item))
+        result["checklist"] = len(draft.get("checklist", []))
+    return result
+
+
+# ---- AI orchestrator ----------------------------------------------------
+
+_ORCHESTRATOR_SYSTEM = (
+    "You route a user's natural-language request to exactly one specialized capability.\n"
+    "Actions: generate_l1_baseline (draft vision/OKRs/stakeholders/capabilities/risks), "
+    "auto_staffing (assign people to squads), decompose_story (break scope into stories), "
+    "scaffold_c4 (build a C4 model from a description), reporting_narrative (executive summary of metrics), "
+    "review_readiness (assess L1 completeness), or none if nothing fits.\n"
+    "Pick the single best action and give a one-line rationale."
+)
+
+
+async def orchestrate(request_text: str) -> OrchestratorPlan:
+    human = f"USER REQUEST:\n{mask_pii(request_text.strip())}\n\nChoose the single best action."
+    return await _invoke(OrchestratorPlan, _ORCHESTRATOR_SYSTEM, human)
+
+
+# ---- Summarize detail → parent field ------------------------------------
+
+_SUMMARIZE_STYLES = {
+    "vision": "a single crisp vision sentence (who it's for, what it provides, the outcome)",
+    "problem": "a one-to-two sentence business-problem statement",
+    "users": "a short comma-separated list of the primary user segments",
+    "default": "one concise, executive-ready sentence",
+}
+
+
+async def summarize_field(text: str, field: str = "default") -> FieldSummary:
+    style = _SUMMARIZE_STYLES.get(field, _SUMMARIZE_STYLES["default"])
+    system = (
+        "You distil detailed notes into a crisp summary for an executive strategy field. "
+        f"Return {style}. No preamble, no markdown, no bullet points — just the summary text."
+    )
+    human = f"DETAIL NOTES:\n{mask_pii(text.strip())}\n\nSummarize into {style}."
+    return await _invoke(FieldSummary, system, human)
+
+
+def apply_l1_baseline(project_id: str, l1_element_id: str, draft: dict[str, Any], sections: list[str] | None = None) -> dict[str, Any]:
+    """Persist accepted parts of the draft. `sections` filters which artifact types to apply."""
+    from backend.l1arch import store as l1_store
+    from backend.l1arch.models import (
+        CapabilityCreate, OkrCreate, RiskCreate, StakeholderCreate, VisionUpdate,
+    )
+
+    wanted = set(sections or ["vision", "okrs", "stakeholders", "capabilities", "risks"])
+    result: dict[str, int] = {}
+
+    if "vision" in wanted and (draft.get("vision_statement") or draft.get("business_problem")):
+        l1_store.update_vision(project_id, l1_element_id, VisionUpdate(
+            vision_statement=draft.get("vision_statement", ""),
+            business_problem=draft.get("business_problem", ""),
+            target_users=draft.get("target_users", ""),
+        ))
+        result["vision"] = 1
+    if "okrs" in wanted:
+        for okr in draft.get("okrs", []):
+            l1_store.create_okr(project_id, l1_element_id, OkrCreate(**okr))
+        result["okrs"] = len(draft.get("okrs", []))
+    if "stakeholders" in wanted:
+        for person in draft.get("stakeholders", []):
+            l1_store.create_stakeholder(project_id, l1_element_id, StakeholderCreate(**person))
+        result["stakeholders"] = len(draft.get("stakeholders", []))
+    if "capabilities" in wanted:
+        for cap in draft.get("capabilities", []):
+            l1_store.create_capability(project_id, l1_element_id, CapabilityCreate(**cap))
+        result["capabilities"] = len(draft.get("capabilities", []))
+    if "risks" in wanted:
+        for risk in draft.get("risks", []):
+            l1_store.create_risk(project_id, l1_element_id, RiskCreate(**risk))
+        result["risks"] = len(draft.get("risks", []))
+    return result
 
 
 def apply_scaffold(project_id: str, scaffold: dict[str, Any]) -> dict[str, Any]:

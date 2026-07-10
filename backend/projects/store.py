@@ -33,11 +33,12 @@ def create_project(payload: ProjectCreate) -> dict[str, Any]:
         "name": payload.name,
         "description": payload.description,
         "leads": json.dumps([lead.model_dump() for lead in payload.leads]),
+        "sensitivity": payload.sensitivity,
         "created_at": utc_now(),
     }
     with connect() as conn:
         conn.execute(
-            "INSERT INTO projects (id, name, description, leads, created_at) VALUES (:id, :name, :description, :leads, :created_at)",
+            "INSERT INTO projects (id, name, description, leads, sensitivity, created_at) VALUES (:id, :name, :description, :leads, :sensitivity, :created_at)",
             project,
         )
     return get_project(project["id"])
@@ -51,6 +52,8 @@ def update_project(project_id: str, payload: ProjectUpdate) -> dict[str, Any]:
         changes["description"] = payload.description
     if payload.leads is not None:
         changes["leads"] = json.dumps([lead.model_dump() for lead in payload.leads])
+    if payload.sensitivity is not None:
+        changes["sensitivity"] = payload.sensitivity
     with connect() as conn:
         if conn.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone() is None:
             raise NotFoundError(f"Project '{project_id}' was not found")

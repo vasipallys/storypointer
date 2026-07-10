@@ -1,4 +1,4 @@
-import { Blocks, CalendarRange, CircleAlert, FileText, Landmark, PanelTopClose, PanelTopOpen, RefreshCw, UsersRound, WalletCards } from 'lucide-react'
+import { Blocks, CalendarRange, CircleAlert, FileText, Landmark, PanelTopClose, PanelTopOpen, RefreshCw, ShieldCheck, UsersRound, WalletCards } from 'lucide-react'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
 import TeamPlanning from './TeamPlanning'
@@ -6,8 +6,10 @@ import WorkCostPlanning from './WorkCostPlanning'
 
 const ArchitecturePlanning = lazy(() => import('./ArchitecturePlanning'))
 const RequirementsPlanning = lazy(() => import('./RequirementsPlanning'))
+const L1Architecture = lazy(() => import('./L1Architecture'))
 
 const SECTIONS = [
+  { id: 'baseline', label: 'L1 baseline', icon: ShieldCheck },
   { id: 'requirements', label: 'Requirements', icon: FileText },
   { id: 'teams', label: 'Tribes & squads', icon: UsersRound },
   { id: 'work', label: 'Work & cost', icon: CalendarRange },
@@ -19,7 +21,7 @@ export default function L1Planning({ projectId, requestedL1Id, onL1Change, onOpe
   const [graph, setGraph] = useState({ elements: [], relations: [] })
   const [l1Id, setL1Id] = useState(requestedL1Id || '')
   const [plan, setPlan] = useState(null)
-  const [section, setSection] = useState('requirements')
+  const [section, setSection] = useState('baseline')
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(true)
   const [headerOpen, setHeaderOpen] = useState(() => {
@@ -90,6 +92,7 @@ export default function L1Planning({ projectId, requestedL1Id, onL1Change, onOpe
         {SECTIONS.map(({ id, label, icon: Icon }) => <button key={id} className={section === id ? 'active' : ''} onClick={() => setSection(id)}><Icon size={17} />{label}</button>)}
       </nav>
       <div className="l1-section-surface">
+        {section === 'baseline' && <Suspense fallback={<div className="l1-loading">Loading L1 baseline…</div>}><L1Architecture projectId={projectId} l1Id={l1Id} setError={setError} /></Suspense>}
         {section === 'requirements' && <Suspense fallback={<div className="l1-loading">Loading requirements workspace…</div>}><RequirementsPlanning projectId={projectId} l1Id={l1Id} setError={setError} /></Suspense>}
         {section === 'teams' && <TeamPlanning projectId={projectId} l1Id={l1Id} plan={plan} refresh={refresh} setError={setError} money={money} />}
         {section === 'work' && <WorkCostPlanning projectId={projectId} l1Id={l1Id} plan={plan} graph={graph} refresh={refresh} setError={setError} money={money} />}

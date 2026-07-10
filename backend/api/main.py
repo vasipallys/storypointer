@@ -30,8 +30,13 @@ from backend.models import (
 )
 from backend.access.router import router as access_router
 from backend.ai.router import router as ai_router
-from backend.auth.deps import resolve_role, route_policy
+from backend.auth.deps import resolve_role, restricted_block, route_policy
 from backend.auth.permissions import can
+from backend.integrations.router import router as integrations_router
+from backend.l1arch.router import router as l1arch_router
+from backend.l2arch.router import router as l2arch_router
+from backend.l3arch.router import router as l3arch_router
+from backend.l4arch.router import router as l4arch_router
 from backend.planning.router import router as planning_router
 from backend.projects.router import router as projects_router
 from backend.reporting.router import router as reporting_router
@@ -101,6 +106,8 @@ async def rbac_middleware(request: Request, call_next):
             return error_response("unauthenticated", "Sign in required.", 401)
         if capability and not can(role, capability):
             return error_response("forbidden", f"Your role does not permit this action ({capability}).", 403)
+        if restricted_block(request.url.path, role):
+            return error_response("forbidden", "This workspace is restricted to managers and admins.", 403)
     return await call_next(request)
 
 
@@ -119,6 +126,11 @@ app.include_router(resources_router)
 app.include_router(access_router)
 app.include_router(reporting_router)
 app.include_router(ai_router)
+app.include_router(l1arch_router)
+app.include_router(l2arch_router)
+app.include_router(l3arch_router)
+app.include_router(l4arch_router)
+app.include_router(integrations_router)
 
 
 @app.exception_handler(RequestValidationError)

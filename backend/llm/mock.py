@@ -377,7 +377,10 @@ def _json_after(text: str, label: str) -> Any:
 def _build_agentic(schema: type[BaseModel], messages: list[Any]) -> BaseModel:
     """Deterministic offline proposals for the agentic services (LLM_PROVIDER=mock)."""
     from backend.ai.schemas import (
-        C4Scaffold, NarrativeOutput, ProposedStory, ScaffoldElement, ScaffoldRelation,
+        C4Scaffold, DraftApi, DraftCapability, DraftChecklistItem, DraftCodeUnit, DraftComponent, DraftConcern,
+        DraftContainer, DraftDependency, DraftIntegration, DraftInterface, DraftNfr, DraftOkr, DraftRisk,
+        DraftStakeholder, DraftTestCase, FieldSummary, L1BaselineDraft, L2Draft, L3Draft, L4Draft,
+        NarrativeOutput, OrchestratorPlan, ProposedStory, ScaffoldElement, ScaffoldRelation,
         StaffingAssignment, StaffingProposal, StoryDecomposition,
     )
 
@@ -457,10 +460,178 @@ def _build_agentic(schema: type[BaseModel], messages: list[Any]) -> BaseModel:
         ]
         return C4Scaffold(summary=f"Mock mode: scaffolded a C4 model around '{keywords[0]}'.", elements=elements, relations=relations)
 
+    if schema is L1BaselineDraft:
+        name_match = re.search(r"L1 INITIATIVE:\s*(.+)", text)
+        name = name_match.group(1).splitlines()[0].strip() if name_match else "the initiative"
+        return L1BaselineDraft(
+            summary=f"Mock mode: drafted an L1 baseline for '{name}'.",
+            vision_statement=f"Deliver {name} as a reliable, secure platform that measurably improves customer and business outcomes.",
+            business_problem=f"Today, {name} capabilities are fragmented, slowing delivery and weakening governance.",
+            target_users="Customers, product, architecture, engineering, security and portfolio teams.",
+            okrs=[
+                DraftOkr(objective=f"Establish the {name} baseline", key_result="80% of L1 artifacts approved", metric_name="L1 readiness", target_value="80%", owner="Product Owner"),
+                DraftOkr(objective="Improve delivery predictability", key_result="Reduce lead time by 30%", metric_name="Lead time", target_value="-30%", owner="Delivery Manager"),
+            ],
+            stakeholders=[
+                DraftStakeholder(name="Business Sponsor", role="Business Sponsor", stakeholder_type="internal", influence="high", interest="high", raci="Accountable"),
+                DraftStakeholder(name="Product Owner", role="Product Owner", stakeholder_type="internal", influence="high", interest="high", raci="Responsible"),
+                DraftStakeholder(name="Enterprise Architect", role="Enterprise Architect", stakeholder_type="internal", influence="high", interest="medium", raci="Consulted"),
+                DraftStakeholder(name="Security Architect", role="Security Architect", stakeholder_type="internal", influence="medium", interest="medium", raci="Consulted"),
+            ],
+            capabilities=[
+                DraftCapability(name="Customer Experience", description="Channels and journeys.", criticality="high"),
+                DraftCapability(name="Core Processing", description="Primary business transactions.", criticality="high"),
+                DraftCapability(name="Data & Analytics", description="Reporting and insight.", criticality="medium"),
+            ],
+            risks=[
+                DraftRisk(title="Unclear system ownership", category="architecture", risk_level="high", mitigation="Assign accountable owners in the stakeholder map.", funding_source="Change budget"),
+                DraftRisk(title="Integration dependency risk", category="delivery", risk_level="medium", mitigation="Map upstream/downstream dependencies early.", funding_source="Run budget"),
+            ],
+        )
+
+    if schema is FieldSummary:
+        match = re.search(r"DETAIL NOTES:\s*(.+?)\n\nSummarize", text, re.DOTALL)
+        notes = (match.group(1) if match else text).strip()
+        # Strip markdown syntax and pick the first prose sentence — deterministic offline summary.
+        cleaned = []
+        for line in notes.splitlines():
+            stripped = re.sub(r"^\s*(#{1,6}\s+|[-*+]\s+|>\s+|\d+\.\s+)", "", line).strip()
+            stripped = re.sub(r"[*_`#]", "", stripped)
+            if stripped:
+                cleaned.append(stripped)
+        prose = " ".join(cleaned)
+        first = re.split(r"(?<=[.!?])\s+", prose)[0] if prose else ""
+        summary = (first[:200].strip() or "Summary unavailable (no detail provided).")
+        return FieldSummary(summary=summary + (" (mock summary)" if "unavailable" not in summary else ""))
+
+    if schema is L2Draft:
+        match = re.search(r"L2 EPIC/CONTAINER SLICE:\s*(.+)", text)
+        name = match.group(1).splitlines()[0].strip() if match else "the slice"
+        diagram = "\n".join([
+            "flowchart LR",
+            "  User[User] --> Web[Web App]",
+            "  Web --> BFF[BFF API]",
+            "  BFF --> Svc[Domain Service]",
+            "  Svc --> DB[(Database)]",
+            "  BFF --> IAM[Identity Provider]",
+        ])
+        return L2Draft(
+            summary=f"Mock mode: an L2 container architecture for '{name}' — a web app, a BFF, a domain service and a database, secured via the identity provider.",
+            container_diagram=diagram,
+            containers=[
+                DraftContainer(name="Web App", capability="Experience", responsibilities="User-facing UI and journeys.", owner_team="Experience Squad", security_classification="internal"),
+                DraftContainer(name="BFF API", capability="Experience", responsibilities="Backend-for-frontend orchestration.", owner_team="Experience Squad", security_classification="internal"),
+                DraftContainer(name="Domain Service", capability="Core Processing", responsibilities="Core business logic and rules.", owner_team="Platform Squad", security_classification="confidential"),
+                DraftContainer(name="Database", capability="Data", responsibilities="System of record.", owner_team="Platform Squad", security_classification="restricted"),
+            ],
+            apis=[
+                DraftApi(name="GET /profile", provider="Domain Service", consumer="BFF API", api_type="REST", data_classification="confidential", authentication="OAuth2"),
+                DraftApi(name="events.updated", provider="Domain Service", consumer="Analytics", api_type="Event", data_classification="internal", authentication="mTLS"),
+            ],
+            nfrs=[
+                DraftNfr(name="API latency", category="performance", metric="p95 latency", target="< 300ms"),
+                DraftNfr(name="Availability", category="availability", metric="uptime", target="99.9%"),
+                DraftNfr(name="Data encryption", category="security", metric="encryption coverage", target="100%"),
+            ],
+            integrations=[
+                DraftIntegration(name="Identity", source_system="BFF API", target_system="Identity Provider", integration_type="API"),
+                DraftIntegration(name="Core Banking", source_system="Domain Service", target_system="Core Banking", integration_type="API"),
+            ],
+        )
+
+    if schema is L3Draft:
+        match = re.search(r"L3 COMPONENT/STORY:\s*(.+)", text)
+        name = match.group(1).splitlines()[0].strip() if match else "the component"
+        diagram = "\n".join([
+            "flowchart TB",
+            "  API[Controller] --> SVC[Service]",
+            "  SVC --> REPO[Repository]",
+            "  SVC --> GW[Gateway]",
+            "  REPO --> DB[(Database)]",
+        ])
+        return L3Draft(
+            summary=f"Mock mode: an L3 component design for '{name}' — a controller, a service, a repository and an outbound gateway.",
+            component_diagram=diagram,
+            components=[
+                DraftComponent(name="Controller", component_type="controller", responsibilities="Handle inbound requests and validation.", tech="Spring MVC", pattern="MVC"),
+                DraftComponent(name="Service", component_type="service", responsibilities="Business logic and orchestration.", tech="Spring", pattern="Service Layer"),
+                DraftComponent(name="Repository", component_type="repository", responsibilities="Persistence and queries.", tech="Spring Data JPA", pattern="Repository"),
+                DraftComponent(name="Gateway", component_type="gateway", responsibilities="Outbound calls to dependencies.", tech="Feign", pattern="Gateway"),
+            ],
+            interfaces=[
+                DraftInterface(name="POST /resource", direction="provided", interface_type="REST", contract="Create resource", authentication="OAuth2"),
+                DraftInterface(name="ledger.debit", direction="consumed", interface_type="Event", contract="Debit event", authentication="mTLS"),
+            ],
+            dependencies=[
+                DraftDependency(name="Ledger Service", dependency_type="container", target="Ledger Service", criticality="high"),
+                DraftDependency(name="Validation library", dependency_type="library", target="hibernate-validator", criticality="low"),
+            ],
+            concerns=[
+                DraftConcern(name="Input validation", category="validation", approach="Bean validation on the request DTOs."),
+                DraftConcern(name="Structured logging", category="logging", approach="Correlation id on every request."),
+                DraftConcern(name="AuthN/AuthZ", category="security", approach="OAuth2 scopes enforced at the controller."),
+            ],
+        )
+
+    if schema is L4Draft:
+        match = re.search(r"L4 TASK:\s*(.+)", text)
+        name = match.group(1).splitlines()[0].strip() if match else "the task"
+        diagram = "\n".join([
+            "classDiagram",
+            "  class Controller {",
+            "    +create(req) Response",
+            "  }",
+            "  class Service {",
+            "    +handle(cmd) Result",
+            "  }",
+            "  Controller --> Service",
+        ])
+        return L4Draft(
+            summary=f"Mock mode: an L4 implementation plan for '{name}' — a controller method, a service method, and their tests.",
+            code_diagram=diagram,
+            code_units=[
+                DraftCodeUnit(name="Controller.create", unit_type="function", responsibility="Parse request, call service, map response.", tech="Java", complexity="low"),
+                DraftCodeUnit(name="Service.handle", unit_type="function", responsibility="Apply business rules and persist.", tech="Java", complexity="medium"),
+                DraftCodeUnit(name="RequestDto", unit_type="class", responsibility="Validated inbound payload.", tech="Java", complexity="low"),
+            ],
+            test_cases=[
+                DraftTestCase(name="rejects invalid payload", test_type="unit", scenario="Given a request missing required fields", expected="Returns 400 with field errors."),
+                DraftTestCase(name="persists on happy path", test_type="integration", scenario="Given a valid request", expected="Record is stored and 201 returned."),
+            ],
+            checklist=[
+                DraftChecklistItem(item="Implement controller + service", category="code"),
+                DraftChecklistItem(item="Unit + integration tests green", category="tests"),
+                DraftChecklistItem(item="Update API docs", category="docs"),
+                DraftChecklistItem(item="Security review of inputs", category="security"),
+                DraftChecklistItem(item="Peer code review", category="review"),
+            ],
+        )
+
+    if schema is OrchestratorPlan:
+        request = text.lower()
+        rules = [
+            ("auto_staffing", ("staff", "assign", "squad", "team", "allocat")),
+            ("scaffold_c4", ("c4", "context diagram", "scaffold", "architecture model")),
+            ("decompose_story", ("decompose", "break", "split", "stories", "story")),
+            ("generate_l1_baseline", ("vision", "okr", "baseline", "stakeholder", "capabilit", "risk")),
+            ("reporting_narrative", ("report", "summary", "executive", "portfolio")),
+            ("review_readiness", ("ready", "readiness", "complete", "govern")),
+        ]
+        action = "none"
+        for candidate, keywords in rules:
+            if any(k in request for k in keywords):
+                action = candidate
+                break
+        return OrchestratorPlan(
+            action=action,
+            rationale=f"Mock router matched the request to '{action}'." if action != "none" else "Mock router found no matching capability.",
+            suggested_prompt=text.strip()[:200],
+        )
+
     raise RuntimeError(f"Mock LLM has no agentic builder for schema '{schema.__name__}'")
 
 
-_AGENTIC_SCHEMAS = {"StaffingProposal", "NarrativeOutput", "StoryDecomposition", "C4Scaffold"}
+_AGENTIC_SCHEMAS = {"StaffingProposal", "NarrativeOutput", "StoryDecomposition", "C4Scaffold", "L1BaselineDraft", "OrchestratorPlan", "FieldSummary", "L2Draft", "L3Draft", "L4Draft"}
 
 
 class MockStructuredLLM:

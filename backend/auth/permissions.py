@@ -1,4 +1,9 @@
-"""Role → capability map (kept in sync with frontend/src/auth/permissions.js)."""
+"""Role → capability map (kept in sync with frontend/src/auth/permissions.js).
+
+Capabilities: admin (see admin area), admin.access, admin.reporting,
+admin.resources, admin.integrations (configure connector URLs/credentials —
+admin-only), platform.create, platform.edit.
+"""
 
 from __future__ import annotations
 

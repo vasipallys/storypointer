@@ -24,6 +24,7 @@ import {
 } from 'lucide-react'
 import mermaid from 'mermaid'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import MermaidView from '../components/MermaidView'
 import { DIAGRAM_TYPE_GROUPS, DIAGRAM_TYPES, getDiagramType } from './diagramCatalog'
 import { DIRECTIONS, EDGE_TYPES, modelToMermaid, NODE_SHAPES, nextNodeId, parseFlowchart } from './mermaidModel'
 
@@ -545,22 +546,5 @@ function ChatDrawer({ messages, input, busy, error, onInput, onSend, onClose }) 
 }
 
 function MermaidLive({ source, onError }) {
-  const container = useRef(null)
-  useEffect(() => {
-    let active = true
-    const timer = setTimeout(async () => {
-      try {
-        const id = `ds-mermaid-${Date.now()}-${Math.random().toString(16).slice(2)}`
-        const { svg, bindFunctions } = await mermaid.render(id, source)
-        if (!active || !container.current) return
-        container.current.innerHTML = svg
-        bindFunctions?.(container.current)
-        onError(null)
-      } catch (error) {
-        if (active) onError(error)
-      }
-    }, 220)
-    return () => { active = false; clearTimeout(timer) }
-  }, [source, onError])
-  return <div ref={container} className="ds-mermaid-live" />
+  return <MermaidView source={source} onError={onError} className="ds-mermaid-live" />
 }

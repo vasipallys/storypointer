@@ -10,7 +10,7 @@ export default function NewProjectWizard({ config, onDone, onCancel }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [form, setForm] = useState({
-    name: '', description: '', leads: [],
+    name: '', description: '', leads: [], sensitivity: 'standard',
     repoMode: 'existing', repoUrl: '', repoPath: '',
     jiraInstance: '', jiraKey: '',
     seed: 'blank',
@@ -25,7 +25,7 @@ export default function NewProjectWizard({ config, onDone, onCancel }) {
       const leads = form.leads
         .map((lead) => ({ name: (lead.name || '').trim(), role: (lead.role || '').trim() }))
         .filter((lead) => lead.name)
-      const project = await api.createProject({ name: form.name.trim(), description: form.description.trim(), leads })
+      const project = await api.createProject({ name: form.name.trim(), description: form.description.trim(), leads, sensitivity: form.sensitivity })
       if (form.repoUrl.trim() || form.repoPath.trim()) {
         await api.addRepo(project.id, { url: form.repoUrl.trim(), local_path: form.repoPath.trim(), mode: form.repoMode })
       }
@@ -65,6 +65,11 @@ export default function NewProjectWizard({ config, onDone, onCancel }) {
           <textarea rows={3} value={form.description} onChange={set('description')} placeholder="What this platform does and who uses it" /></label>
         <div className="m3-field"><span>Leads</span>
           <LeadsEditor leads={form.leads} onChange={(leads) => setForm({ ...form, leads })} /></div>
+        <label className="m3-field"><span>Access sensitivity</span>
+          <select value={form.sensitivity} onChange={set('sensitivity')}>
+            <option value="standard">Standard — any signed-in user</option>
+            <option value="restricted">Restricted — managers &amp; admins only</option>
+          </select></label>
       </>}
       {step === 1 && <>
         <div className="m3-radio-row">

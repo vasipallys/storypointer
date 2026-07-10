@@ -2,12 +2,13 @@
 // admin > manager > contributor > viewer. '*' means every capability.
 //
 // Capabilities used across the app:
-//   admin            — see the Admin area at all
-//   admin.access     — manage users & roles
-//   admin.reporting  — view reporting dashboards
-//   admin.resources  — manage the resource directory
-//   platform.create  — create a new platform
-//   platform.edit    — edit C4 model, plans, estimate
+//   admin              — see the Admin area at all
+//   admin.access       — manage users & roles
+//   admin.reporting    — view reporting dashboards
+//   admin.resources    — manage the resource directory
+//   admin.integrations — configure connector URLs/credentials (admin-only)
+//   platform.create    — create a new platform
+//   platform.edit      — edit C4 model, plans, estimate
 export const ROLE_LABELS = {
   admin: 'Administrator',
   manager: 'Manager',

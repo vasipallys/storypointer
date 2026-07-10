@@ -1,13 +1,11 @@
 import { Blocks, Download, FileCode2, PencilRuler, Plus, Save, Sparkles, Trash2 } from 'lucide-react'
-import mermaid from 'mermaid'
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import DockablePanel from '../components/DockablePanel'
+import MermaidView from '../components/MermaidView'
 import { DEFAULT_DIAGRAM_TYPE, DIAGRAM_TYPE_GROUPS, diagramTypeLabel, getDiagramType } from './diagramCatalog'
 import DiagramStudio from './DiagramStudio'
 import PlanningDialog from './PlanningDialog'
-
-mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'base', themeVariables: { primaryColor: '#d3e3fd', primaryTextColor: '#1f1f1f', primaryBorderColor: '#0b57d0', lineColor: '#5f6368', secondaryColor: '#e6f4ea', tertiaryColor: '#fef7e0', fontFamily: 'Roboto, sans-serif' } })
 
 function DiagramTypeOptions() {
   return DIAGRAM_TYPE_GROUPS.map((group) => (
@@ -18,26 +16,7 @@ function DiagramTypeOptions() {
 }
 
 function MermaidPreview({ source, onError, svgRef }) {
-  const container = useRef(null)
-  useEffect(() => {
-    let active = true
-    const render = async () => {
-      try {
-        const id = `l1-mermaid-${Date.now()}-${Math.random().toString(16).slice(2)}`
-        const { svg, bindFunctions } = await mermaid.render(id, source)
-        if (!active || !container.current) return
-        container.current.innerHTML = svg
-        bindFunctions?.(container.current)
-        svgRef.current = svg
-        onError(null)
-      } catch (error) {
-        if (active) onError(error)
-      }
-    }
-    const timer = setTimeout(render, 220)
-    return () => { active = false; clearTimeout(timer) }
-  }, [source, onError, svgRef])
-  return <div ref={container} className="l1-mermaid-preview" />
+  return <MermaidView source={source} onError={onError} onSvg={(svg) => { svgRef.current = svg }} className="l1-mermaid-preview" />
 }
 
 export default function ArchitecturePlanning({ projectId, l1Id, plan, refresh, setError }) {

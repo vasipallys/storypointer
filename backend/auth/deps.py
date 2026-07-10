@@ -7,13 +7,32 @@ for the password-less bootstrap admin that has no directory id, `X-User-Role`.
 
 from __future__ import annotations
 
+import re
+
 from starlette.requests import Request
 
 from backend.access.models import ROLES
 from backend.access.store import effective_role
+from backend.storage.db import connect
 
 # Endpoints reachable before/without sign-in.
 PUBLIC_PATHS = {"/health", "/config", "/access/login-users", "/access/roles", "/jira/instances", "/docs", "/openapi.json"}
+
+# ABAC: a workspace marked `restricted` admits only these roles (resource sensitivity × role).
+_RESTRICTED_ROLES = {"admin", "manager"}
+_PROJECT_PATH = re.compile(r"^/projects/([0-9a-f]+)")
+
+
+def restricted_block(path: str, role: str | None) -> bool:
+    """True when the caller's role may not touch this restricted-workspace path."""
+    if role in _RESTRICTED_ROLES:
+        return False
+    match = _PROJECT_PATH.match(path)
+    if not match:
+        return False
+    with connect() as conn:
+        row = conn.execute("SELECT sensitivity FROM projects WHERE id = ?", (match.group(1),)).fetchone()
+    return bool(row) and row["sensitivity"] == "restricted"
 
 
 def resolve_role(request: Request) -> str | None:
@@ -32,6 +51,10 @@ def route_policy(method: str, path: str) -> tuple[bool, str | None]:
         return True, "admin.access"
     if path.startswith("/reporting"):
         return True, "admin.reporting"
+    if path.startswith("/integrations"):
+        # The catalog is readable by any signed-in user; connector configuration
+        # (URLs/credentials) is admin-only.
+        return (True, None) if path == "/integrations/catalog" else (True, "admin.integrations")
     if path.startswith("/resources"):
         # Reading the directory powers planning dropdowns (contributors need it);
         # only editing it requires the resources capability.

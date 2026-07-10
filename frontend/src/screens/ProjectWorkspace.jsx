@@ -1,5 +1,5 @@
-import { DownloadCloud, FolderGit2, Landmark, LayoutDashboard, Network, ScanSearch, Sigma, UsersRound, Zap } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import { Boxes, Code2, DownloadCloud, FolderGit2, Landmark, LayoutDashboard, Network, Puzzle, ScanSearch, Sigma, UsersRound, Zap } from 'lucide-react'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import { api } from '../api/client'
 import DockablePanel from '../components/DockablePanel'
 import LeadsEditor from '../components/LeadsEditor'
@@ -8,9 +8,16 @@ import RollupDashboard from '../c4/RollupDashboard'
 import L1Planning from '../planning/L1Planning'
 import QuickEstimate from './QuickEstimate'
 
+const L2Architecture = lazy(() => import('../planning/L2Architecture'))
+const L3Architecture = lazy(() => import('../planning/L3Architecture'))
+const L4Architecture = lazy(() => import('../planning/L4Architecture'))
+
 const TABS = [
   { id: 'canvas', label: 'C4 canvas', icon: Network },
   { id: 'planning', label: 'L1 plan', icon: Landmark },
+  { id: 'l2arch', label: 'L2 arch', icon: Boxes },
+  { id: 'l3arch', label: 'L3 arch', icon: Puzzle },
+  { id: 'l4arch', label: 'L4 detail', icon: Code2 },
   { id: 'rollup', label: 'Roll-up', icon: Sigma },
   { id: 'quick', label: 'Quick', icon: Zap },
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -126,6 +133,9 @@ export default function ProjectWorkspace({ projectId, config, notice }) {
         onOpenL1Plan={(elementId) => { setPlanningL1Id(elementId); setTab('planning') }} />}
       {tab === 'planning' && <L1Planning projectId={projectId} requestedL1Id={planningL1Id}
         onL1Change={setPlanningL1Id} onOpenCanvas={() => setTab('canvas')} />}
+      {tab === 'l2arch' && <Suspense fallback={<p className="l1-loading">Loading L2 workspace…</p>}><L2Architecture projectId={projectId} onOpenCanvas={() => setTab('canvas')} /></Suspense>}
+      {tab === 'l3arch' && <Suspense fallback={<p className="l1-loading">Loading L3 workspace…</p>}><L3Architecture projectId={projectId} onOpenCanvas={() => setTab('canvas')} /></Suspense>}
+      {tab === 'l4arch' && <Suspense fallback={<p className="l1-loading">Loading L4 workspace…</p>}><L4Architecture projectId={projectId} onOpenCanvas={() => setTab('canvas')} /></Suspense>}
       {tab === 'rollup' && <RollupDashboard projectId={projectId} />}
       {tab === 'quick' && <QuickEstimate config={config} />}
       {tab === 'overview' && <Overview project={project} config={config} onChanged={refresh} />}

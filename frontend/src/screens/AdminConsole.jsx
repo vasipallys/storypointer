@@ -1,7 +1,8 @@
-import { BarChart3, ShieldCheck, Users } from 'lucide-react'
+import { BarChart3, Plug, ShieldCheck, Users } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import AccessManagement from './admin/AccessManagement'
+import Integrations from './admin/Integrations'
 import Reporting from './admin/Reporting'
 import ResourceDirectory from './ResourceDirectory'
 
@@ -9,6 +10,7 @@ const SECTIONS = [
   { key: 'access', label: 'Access management', icon: ShieldCheck, cap: 'admin.access', Component: AccessManagement },
   { key: 'reporting', label: 'Reporting', icon: BarChart3, cap: 'admin.reporting', Component: Reporting },
   { key: 'resources', label: 'Resources', icon: Users, cap: 'admin.resources', Component: ResourceDirectory },
+  { key: 'integrations', label: 'Integrations', icon: Plug, cap: 'admin.reporting', Component: Integrations },
 ]
 
 export default function AdminConsole() {
