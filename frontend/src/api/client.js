@@ -300,6 +300,13 @@ export const api = {
   applyL4Baseline: (id, l4, draft, sections) => json(`/projects/${id}/l4/${l4}/ai/l4/apply`, 'POST', { draft, sections }),
   l4Traceability: (id, l4) => jsonRequest(`/projects/${id}/l4/${l4}/arch/traceability`),
 
+  // Workflow guide
+  workflowGuide: (id) => jsonRequest(`/projects/${id}/workflow`),
+
+  // Conversational assistant
+  chat: (id, message) => json(`/projects/${id}/chat`, 'POST', { message }),
+  chatApply: (id, mutation) => json(`/projects/${id}/chat/apply`, 'POST', { mutation }),
+
   // Integration connector configuration
   integrationConfig: (key) => jsonRequest(`/integrations/${key}/config`),
   saveIntegrationConfig: (key, payload) => json(`/integrations/${key}/config`, 'PATCH', payload),

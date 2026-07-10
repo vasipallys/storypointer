@@ -59,6 +59,10 @@ def route_policy(method: str, path: str) -> tuple[bool, str | None]:
         # Reading the directory powers planning dropdowns (contributors need it);
         # only editing it requires the resources capability.
         return (True, None) if method == "GET" else (True, "admin.resources")
+    # The chat query/propose endpoint reads and proposes but never persists, so any
+    # signed-in user may use it; only /chat/apply (which writes) needs platform.edit.
+    if method == "POST" and path.endswith("/chat"):
+        return True, None
     if method in ("POST", "PATCH", "PUT", "DELETE"):
         return True, "platform.edit"
     return True, None  # authenticated reads

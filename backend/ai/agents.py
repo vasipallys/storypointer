@@ -9,7 +9,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from backend.ai.masking import mask_pii
-from backend.ai.schemas import C4Scaffold, FieldSummary, L1BaselineDraft, L2Draft, L3Draft, L4Draft, NarrativeOutput, OrchestratorPlan, StaffingProposal, StoryDecomposition
+from backend.ai.schemas import ChatCommand, C4Scaffold, FieldSummary, L1BaselineDraft, L2Draft, L3Draft, L4Draft, NarrativeOutput, OrchestratorPlan, StaffingProposal, StoryDecomposition
 from backend.c4 import store as c4_store
 from backend.graph.nodes import _parse_structured_result
 from backend.llm.factory import get_structured_llm
@@ -430,6 +430,30 @@ _ORCHESTRATOR_SYSTEM = (
 async def orchestrate(request_text: str) -> OrchestratorPlan:
     human = f"USER REQUEST:\n{mask_pii(request_text.strip())}\n\nChoose the single best action."
     return await _invoke(OrchestratorPlan, _ORCHESTRATOR_SYSTEM, human)
+
+
+# ---- Conversational assistant -------------------------------------------
+
+_CHAT_SYSTEM = (
+    "You are the Story Pointer assistant. Interpret the user's message into ONE structured command over "
+    "the project's C4 model (levels L1 initiative, L2 container, L3 component/story, L4 task).\n"
+    "Actions: overview (project status/next step), list (elements at a level), readiness (of a named element "
+    "or level), report (roll-up / what to do next), create_element (level+name, optional parent name), "
+    "update_element (name + new_name/status/description), delete_element (name), help, or none.\n"
+    "Resolve names against the PROJECT ELEMENTS list. For create/update/delete set the exact element name(s). "
+    "Always write a short, friendly `reply`. Never invent elements that aren't in the list for reads."
+)
+
+
+async def interpret_chat(project_id: str, message: str) -> ChatCommand:
+    elements = c4_store.list_graph(project_id)["elements"]
+    listing = "\n".join(f"- {e['level']} · {e['name']} ({e['status']})" for e in elements[:100]) or "(no elements yet)"
+    human = (
+        f"PROJECT ELEMENTS:\n{listing}\n\n"
+        f"USER MESSAGE:\n{mask_pii(message.strip())}\n\n"
+        "Interpret into one command."
+    )
+    return await _invoke(ChatCommand, _CHAT_SYSTEM, human)
 
 
 # ---- Summarize detail → parent field ------------------------------------

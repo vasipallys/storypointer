@@ -246,3 +246,21 @@ class L4Draft(BaseModel):
     code_units: list[DraftCodeUnit] = Field(default_factory=list, max_length=25)
     test_cases: list[DraftTestCase] = Field(default_factory=list, max_length=25)
     checklist: list[DraftChecklistItem] = Field(default_factory=list, max_length=20)
+
+
+# ---- Conversational assistant -------------------------------------------
+
+class ChatCommand(BaseModel):
+    """One interpreted chat intent. Reads execute immediately; the *_element writes
+    are surfaced to the user as a proposal to apply."""
+    action: Literal[
+        "overview", "list", "readiness", "report",
+        "create_element", "update_element", "delete_element", "help", "none",
+    ] = "help"
+    level: str = Field(default="", max_length=4)       # L1–L4 (list / create)
+    name: str = Field(default="", max_length=200)      # target element name
+    parent: str = Field(default="", max_length=200)    # parent element name (create)
+    new_name: str = Field(default="", max_length=200)  # rename target
+    status: str = Field(default="", max_length=40)     # update status
+    description: str = Field(default="", max_length=2000)
+    reply: str = Field(default="", max_length=1200)    # natural-language answer

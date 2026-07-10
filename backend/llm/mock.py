@@ -377,7 +377,7 @@ def _json_after(text: str, label: str) -> Any:
 def _build_agentic(schema: type[BaseModel], messages: list[Any]) -> BaseModel:
     """Deterministic offline proposals for the agentic services (LLM_PROVIDER=mock)."""
     from backend.ai.schemas import (
-        C4Scaffold, DraftApi, DraftCapability, DraftChecklistItem, DraftCodeUnit, DraftComponent, DraftConcern,
+        ChatCommand, C4Scaffold, DraftApi, DraftCapability, DraftChecklistItem, DraftCodeUnit, DraftComponent, DraftConcern,
         DraftContainer, DraftDependency, DraftIntegration, DraftInterface, DraftNfr, DraftOkr, DraftRisk,
         DraftStakeholder, DraftTestCase, FieldSummary, L1BaselineDraft, L2Draft, L3Draft, L4Draft,
         NarrativeOutput, OrchestratorPlan, ProposedStory, ScaffoldElement, ScaffoldRelation,
@@ -607,6 +607,59 @@ def _build_agentic(schema: type[BaseModel], messages: list[Any]) -> BaseModel:
             ],
         )
 
+    if schema is ChatCommand:
+        msg_match = re.search(r"USER MESSAGE:\s*(.+?)\n\nInterpret", text, re.DOTALL)
+        msg = (msg_match.group(1) if msg_match else text).strip()
+        low = msg.lower()
+        # Known element names from the PROJECT ELEMENTS listing help resolve targets.
+        names = re.findall(r"·\s*(.+?)\s*\(", text)
+        names.sort(key=len, reverse=True)
+        found = next((n for n in names if n.lower() in low), "")
+        level_match = re.search(r"\bl([1-4])\b", low)
+        level = f"L{level_match.group(1)}" if level_match else ""
+
+        def _after(*words):
+            for w in words:
+                m = re.search(rf"\b{w}\s+(.+)", msg, re.IGNORECASE)
+                if m:
+                    return m.group(1).strip().strip('"“”').rstrip("?.")
+            return ""
+
+        if re.search(r"\brename\b", low):
+            target = re.search(r"rename\s+(.+?)\s+to\s+(.+)", msg, re.IGNORECASE)
+            if target:
+                return ChatCommand(action="update_element", name=target.group(1).strip(), new_name=target.group(2).strip().rstrip("?."),
+                                   reply=f"Rename “{target.group(1).strip()}” — Apply to confirm.")
+        if "status" in low and " to " in low:
+            st = re.search(r"status\s+to\s+(\w+)", low)
+            return ChatCommand(action="update_element", name=found, status=(st.group(1) if st else ""),
+                               reply=f"Update status of “{found}” — Apply to confirm.")
+        if re.search(r"\b(delete|remove)\b", low):
+            return ChatCommand(action="delete_element", name=found or _after("delete", "remove"),
+                               reply="Delete that element — Apply to confirm.")
+        if re.search(r"\b(create|add|new)\b", low):
+            name = ""
+            nm = re.search(r"(?:called|named)\s+(.+?)(?:\s+under\s+|$)", msg, re.IGNORECASE)
+            if nm:
+                name = nm.group(1).strip().strip('"“”')
+            parent = ""
+            pm = re.search(r"\bunder\s+(.+)", msg, re.IGNORECASE)
+            if pm:
+                parent = pm.group(1).strip().strip('"“”').rstrip("?.")
+            return ChatCommand(action="create_element", level=level, name=name, parent=parent,
+                               reply=f"Create {level or 'element'} “{name}” — Apply to confirm.")
+        if re.search(r"\b(list|show|how many)\b", low):
+            return ChatCommand(action="list", level=level, reply="Here's what I found.")
+        if re.search(r"readiness|ready|complete", low):
+            return ChatCommand(action="readiness", level=level, name=found, reply="Checking readiness.")
+        if re.search(r"next|what should|recommend|roll.?up|report|estimat", low):
+            return ChatCommand(action="report", reply="Here's the roll-up and next step.")
+        if re.search(r"overview|status|progress|where am i|summary", low):
+            return ChatCommand(action="overview", reply="Here's the project status.")
+        if "help" in low or "what can you" in low:
+            return ChatCommand(action="help", reply="")
+        return ChatCommand(action="help", reply="")
+
     if schema is OrchestratorPlan:
         request = text.lower()
         rules = [
@@ -631,7 +684,7 @@ def _build_agentic(schema: type[BaseModel], messages: list[Any]) -> BaseModel:
     raise RuntimeError(f"Mock LLM has no agentic builder for schema '{schema.__name__}'")
 
 
-_AGENTIC_SCHEMAS = {"StaffingProposal", "NarrativeOutput", "StoryDecomposition", "C4Scaffold", "L1BaselineDraft", "OrchestratorPlan", "FieldSummary", "L2Draft", "L3Draft", "L4Draft"}
+_AGENTIC_SCHEMAS = {"StaffingProposal", "NarrativeOutput", "StoryDecomposition", "C4Scaffold", "L1BaselineDraft", "OrchestratorPlan", "FieldSummary", "L2Draft", "L3Draft", "L4Draft", "ChatCommand"}
 
 
 class MockStructuredLLM:

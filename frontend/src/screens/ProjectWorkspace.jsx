@@ -1,12 +1,14 @@
-import { Boxes, Code2, DownloadCloud, FolderGit2, Landmark, LayoutDashboard, Network, Puzzle, ScanSearch, Sigma, UsersRound, Zap } from 'lucide-react'
+import { Boxes, Code2, Compass, DownloadCloud, FolderGit2, Landmark, LayoutDashboard, Network, Puzzle, ScanSearch, Sigma, UsersRound, Zap } from 'lucide-react'
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import { api } from '../api/client'
+import ChatDock from '../components/ChatDock'
 import DockablePanel from '../components/DockablePanel'
 import LeadsEditor from '../components/LeadsEditor'
 import C4Canvas from '../c4/C4Canvas'
 import RollupDashboard from '../c4/RollupDashboard'
 import L1Planning from '../planning/L1Planning'
 import QuickEstimate from './QuickEstimate'
+import WorkflowWizard from './WorkflowWizard'
 
 const L2Architecture = lazy(() => import('../planning/L2Architecture'))
 const L3Architecture = lazy(() => import('../planning/L3Architecture'))
@@ -109,6 +111,7 @@ export default function ProjectWorkspace({ projectId, config, notice }) {
   const [planningL1Id, setPlanningL1Id] = useState(null)
   const [project, setProject] = useState(null)
   const [error, setError] = useState(null)
+  const [wizard, setWizard] = useState(false)
 
   const refresh = useCallback(() => api.getProject(projectId).then(setProject).catch(setError), [projectId])
   useEffect(() => { refresh() }, [refresh])
@@ -125,9 +128,13 @@ export default function ProjectWorkspace({ projectId, config, notice }) {
     </DockablePanel>
     <div className="m3-content">
       <div className="m3-page-title">
-        <h1>{project.name}</h1>
-        <p>{TABS.find((item) => item.id === tab)?.label}</p>
+        <div>
+          <h1>{project.name}</h1>
+          <p>{TABS.find((item) => item.id === tab)?.label}</p>
+        </div>
+        <button className="m3-btn tonal small wf-launch" onClick={() => setWizard(true)}><Compass size={15} /> Workflow guide</button>
       </div>
+      {wizard && <WorkflowWizard projectId={projectId} onNavigate={setTab} onClose={() => setWizard(false)} />}
       {notice && tab === 'canvas' && <div className="m3-banner info">{notice}</div>}
       {tab === 'canvas' && <C4Canvas projectId={projectId} config={config}
         onOpenL1Plan={(elementId) => { setPlanningL1Id(elementId); setTab('planning') }} />}
@@ -140,5 +147,6 @@ export default function ProjectWorkspace({ projectId, config, notice }) {
       {tab === 'quick' && <QuickEstimate config={config} />}
       {tab === 'overview' && <Overview project={project} config={config} onChanged={refresh} />}
     </div>
+    <ChatDock projectId={projectId} onChanged={refresh} />
   </div>
 }

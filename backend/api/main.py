@@ -35,9 +35,11 @@ from backend.auth.permissions import can
 from backend.integrations.router import router as integrations_router
 from backend.l1arch.router import router as l1arch_router
 from backend.l2arch.router import router as l2arch_router
+from backend.chat.router import router as chat_router
 from backend.l3arch.router import router as l3arch_router
 from backend.l4arch.router import router as l4arch_router
 from backend.planning.router import router as planning_router
+from backend.workflow.router import router as workflow_router
 from backend.projects.router import router as projects_router
 from backend.reporting.router import router as reporting_router
 from backend.resources.router import router as resources_router
@@ -130,6 +132,8 @@ app.include_router(l1arch_router)
 app.include_router(l2arch_router)
 app.include_router(l3arch_router)
 app.include_router(l4arch_router)
+app.include_router(workflow_router)
+app.include_router(chat_router)
 app.include_router(integrations_router)
 
 
