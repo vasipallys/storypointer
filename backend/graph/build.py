@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from backend.graph.checkpoint import get_checkpointer
 from backend.graph.nodes import (
     assess_risks,
     compare_to_anchors,
@@ -49,4 +49,4 @@ def get_estimation_graph():
     builder.add_edge("detect_hidden_tasks", "assess_risks")
     builder.add_edge("assess_risks", "recommend_split")
     builder.add_edge("recommend_split", END)
-    return builder.compile(checkpointer=get_checkpointer())
+    return builder.compile(checkpointer=MemorySaver())

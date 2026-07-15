@@ -6,7 +6,7 @@ from typing import Annotated, Any, Literal, TypedDict
 
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 ScoreLevel = Literal["Low", "Medium", "High"]
 PARAMETERS = [
@@ -46,13 +46,7 @@ class DriversOutput(BaseModel):
 
 class AnchorComparisonOutput(BaseModel):
     comparison: str
-    anchor_titles: list[str] = Field(min_length=1)
-
-    @field_validator("anchor_titles", mode="after")
-    @classmethod
-    def keep_top_three(cls, value: list[str]) -> list[str]:
-        # Small models often echo every anchor; keep the closest three rather than fail the run.
-        return value[:3]
+    anchor_titles: list[str] = Field(min_length=1, max_length=3)
 
 
 class PointsOutput(BaseModel):

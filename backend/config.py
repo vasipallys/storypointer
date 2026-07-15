@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-ENV_FILE = Path(os.getenv("STORYPOINTER_ENV_FILE", Path(__file__).with_name(".env"))).expanduser()
+ENV_FILE = Path(__file__).with_name(".env")
 load_dotenv(ENV_FILE)
 
 
@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 3000
     jira_instances: str = ""
     jira_write_enabled: bool = False
-    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174"
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     @property
     def llm(self) -> LLMSettings:
@@ -122,9 +122,9 @@ class Settings(BaseSettings):
     def validate_startup(self) -> None:
         errors: list[str] = []
         try:
-            # Shape validation only; the API key requirement is provider-specific
-            # and lives in the LLM factory (mock mode needs no key).
-            self.llm
+            llm = self.llm
+            if not llm.api_key.get_secret_value():
+                errors.append("LLM_API_KEY is required")
         except ConfigurationError as exc:
             errors.extend(exc.errors)
         try:

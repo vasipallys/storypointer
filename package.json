@@ -1,96 +1,25 @@
 {
-  "name": "story-pointer-monorepo",
+  "name": "story-pointer-v2",
   "private": true,
   "version": "1.0.0",
-  "description": "Evidence-led story-point estimation and L1 planning workspace.",
-  "author": "Story Pointer Contributors",
-  "main": "desktop/electron/main.cjs",
   "type": "module",
-  "workspaces": [
-    "frontend",
-    "desktop"
-  ],
   "scripts": {
-    "api:dev": "node scripts/run-python.mjs -m uvicorn backend.api.main:app --reload --port 8000",
-    "api:seed:banking": "node scripts/run-python.mjs scripts/seed_banking.py",
-    "api:seed:demo": "node scripts/run-python.mjs scripts/seed_demo.py",
-    "api:seed:resources": "node scripts/run-python.mjs scripts/seed_resources.py",
-    "api:test": "node scripts/run-python.mjs -m pytest backend/tests -q",
-    "backend:bundle": "npm run desktop:backend:bundle",
-    "build": "npm run web:build",
-    "build:web": "npm run web:build",
-    "desktop:backend:bundle": "npm --workspace @storypointer/desktop run backend:bundle",
-    "desktop:build": "npm --workspace @storypointer/desktop run build",
-    "desktop:build:mac": "npm --workspace @storypointer/desktop run build:mac",
-    "desktop:build:win": "npm --workspace @storypointer/desktop run build:win",
-    "desktop:dev": "npm --workspace @storypointer/desktop run dev",
-    "desktop:icon": "npm --workspace @storypointer/desktop run icon",
-    "desktop:pack": "npm --workspace @storypointer/desktop run pack",
-    "desktop:prepare": "npm --workspace @storypointer/desktop run prepare-app",
-    "dev": "npm run web:dev",
-    "dev:all": "concurrently -k -n api,web -c green,cyan \"npm run api:dev\" \"npm run web:dev\"",
-    "dev:web": "npm run web:dev",
-    "electron:dev": "npm run desktop:dev",
-    "preview": "npm run web:preview",
-    "test": "npm run test:all",
-    "test:all": "npm run api:test && npm run web:test",
-    "test:web": "npm run web:test",
-    "web:build": "npm --workspace @storypointer/web run build",
-    "web:dev": "npm --workspace @storypointer/web run dev",
-    "web:preview": "npm --workspace @storypointer/web run preview",
-    "web:test": "npm --workspace @storypointer/web run test"
+    "dev": "vite --config frontend/vite.config.js",
+    "build": "vite build --config frontend/vite.config.js",
+    "preview": "vite preview --config frontend/vite.config.js",
+    "test": "vitest run --config frontend/vite.config.js"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "4.4.1",
+    "lucide-react": "0.511.0",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "vite": "6.4.3"
   },
   "devDependencies": {
-    "concurrently": "^10.0.3"
-  },
-  "build": {
-    "appId": "com.storypointer.app",
-    "productName": "Story Pointer",
-    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "dist/**/*",
-      "desktop/electron/**/*",
-      "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "desktop/backend-dist",
-        "to": "backend",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "desktop/backend.env.example",
-        "to": "backend.env.example"
-      }
-    ],
-    "mac": {
-      "icon": "desktop/assets/icon.png",
-      "category": "public.app-category.productivity",
-      "target": [
-        "dmg",
-        "zip"
-      ]
-    },
-    "win": {
-      "icon": "desktop/assets/icon.png",
-      "target": [
-        "nsis",
-        "portable"
-      ]
-    },
-    "nsis": {
-      "artifactName": "${productName}-${version}-${os}-${arch}-setup.${ext}",
-      "oneClick": false,
-      "perMachine": false,
-      "allowToChangeInstallationDirectory": true
-    },
-    "portable": {
-      "artifactName": "${productName}-${version}-${os}-${arch}-portable.${ext}"
-    }
+    "@testing-library/jest-dom": "6.6.3",
+    "@testing-library/react": "16.3.0",
+    "jsdom": "26.1.0",
+    "vitest": "3.2.6"
   }
 }

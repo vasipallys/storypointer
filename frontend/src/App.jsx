@@ -1,112 +1,74 @@
-import { BookOpen, BrainCircuit, ChevronDown, LogOut, Server, ShieldCheck } from 'lucide-react'
+import { BrainCircuit, ChevronRight, CircleHelp, Server } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { api } from './api/client'
-import { useAuth } from './auth/AuthContext'
-import { ROLE_LABELS } from './auth/permissions'
-import AdminConsole from './screens/AdminConsole'
-import Login from './screens/Login'
-import NewProjectWizard from './screens/NewProjectWizard'
-import ProjectsHome from './screens/ProjectsHome'
-import ProjectWorkspace from './screens/ProjectWorkspace'
-import QuickEstimate from './screens/QuickEstimate'
-
-function initials(name) {
-  return (name || '?').trim().split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '?'
-}
-
-function UserMenu() {
-  const { user, signOut } = useAuth()
-  const [open, setOpen] = useState(false)
-  const ref = useRef(null)
-
-  useEffect(() => {
-    const onClick = (event) => { if (ref.current && !ref.current.contains(event.target)) setOpen(false) }
-    document.addEventListener('mousedown', onClick)
-    return () => document.removeEventListener('mousedown', onClick)
-  }, [])
-
-  return (
-    <div className="user-menu" ref={ref}>
-      <button className="user-menu-trigger" onClick={() => setOpen((value) => !value)} aria-haspopup="menu" aria-expanded={open}>
-        <span className="login-avatar sm">{initials(user.name)}</span>
-        <span className="user-menu-id"><strong>{user.name}</strong><small>{ROLE_LABELS[user.role] || user.role}</small></span>
-        <ChevronDown size={15} />
-      </button>
-      {open && (
-        <div className="user-menu-pop" role="menu">
-          <div className="user-menu-head"><span className="login-avatar">{initials(user.name)}</span><div><strong>{user.name}</strong><small>{user.staff_code ? `${user.staff_code} · ` : ''}{ROLE_LABELS[user.role] || user.role}</small></div></div>
-          <button className="user-menu-item" role="menuitem" onClick={signOut}><LogOut size={15} /> Sign out</button>
-        </div>
-      )}
-    </div>
-  )
-}
+import BatchTable from './components/BatchTable'
+import ColumnMapper from './components/ColumnMapper'
+import ErrorCard from './components/ErrorCard'
+import ExcelUpload from './components/ExcelUpload'
+import JiraBrowser from './components/JiraBrowser'
+import PipelineView from './components/PipelineView'
+import ResultCard from './components/ResultCard'
+import SourceSwitcher from './components/SourceSwitcher'
+import StatusBadge from './components/StatusBadge'
+import StoryForm from './components/StoryForm'
 
 export default function App() {
-  const { user, can } = useAuth()
-  const [route, setRoute] = useState({ name: 'home' })
+  const [source, setSource] = useState('manual')
   const [config, setConfig] = useState(null)
   const [health, setHealth] = useState(null)
+  const [issues, setIssues] = useState([])
+  const [upload, setUpload] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [steps, setSteps] = useState([])
+  const [pipelineTitle, setPipelineTitle] = useState('')
+  const [result, setResult] = useState(null)
+  const [results, setResults] = useState([])
   const [error, setError] = useState(null)
-
-  // Land every freshly signed-in identity on Home (avoids showing a prior
-  // session's route, e.g. an admin page, to a user who can't access it).
-  useEffect(() => { setRoute({ name: 'home' }) }, [user?.staff_id, user?.role])
+  const controller = useRef(null)
 
   useEffect(() => {
-    if (!user) return
-    Promise.all([api.config(), api.health()])
-      .then(([nextConfig, nextHealth]) => { setConfig(nextConfig); setHealth(nextHealth) })
-      .catch(setError)
-  }, [user])
+    Promise.all([api.config(), api.health()]).then(([nextConfig, nextHealth]) => { setConfig(nextConfig); setHealth(nextHealth) }).catch(setError)
+    return () => controller.current?.abort()
+  }, [])
 
-  if (!user) return <Login />
+  const begin = () => { setLoading(true); setError(null); setResult(null); setResults([]); setSteps([]); controller.current = new AbortController() }
+  const end = () => setLoading(false)
+  const onSingleEvent = (event, data) => {
+    if (event === 'started') setPipelineTitle(data.title)
+    if (event === 'node') setSteps((current) => [...current, data.node])
+    if (event === 'result') setResult(data)
+    if (event === 'error') setError(new Error(data.message))
+  }
+  const estimateOne = async (story) => { begin(); try { await api.estimate(story, onSingleEvent, controller.current.signal) } catch (err) { setError(err) } finally { end() } }
+  const onBatchEvent = (event, data) => {
+    if (event === 'item_started') { setPipelineTitle(data.title); setSteps([]) }
+    if (event === 'item_node') setSteps((current) => [...current, data.node])
+    if (event === 'item_result') setResults((current) => [...current, data.result])
+    if (event === 'item_error' || event === 'error') setError(new Error(data.message))
+  }
+  const estimateBatch = async (stories) => { begin(); try { await api.estimateBatch(stories, onBatchEvent, controller.current.signal) } catch (err) { setError(err) } finally { end() } }
+  const fetchJira = async (instance, project, filters) => { setError(null); setLoading(true); try { setIssues(await api.jiraIssues(instance, project, filters)) } catch (err) { setError(err) } finally { end() } }
+  const parseFile = async (file) => { setError(null); setLoading(true); try { setUpload(await api.parseUpload(file)) } catch (err) { setError(err) } finally { end() } }
+  const estimateUpload = async (rows, mapping) => { begin(); try { await api.estimateUpload(rows, mapping, onBatchEvent, controller.current.signal) } catch (err) { setError(err) } finally { end() } }
+  const writePoints = async (item) => { if (!window.confirm(`Write ${item.points} points to ${item.story.key}? This changes Jira.`)) return; try { await api.writePoints(item.story.jira_instance, item.story.key, item.points); window.alert('Jira was updated.') } catch (err) { setError(err) } }
 
   const jiraStatuses = health?.jira ? Object.entries(health.jira) : []
   const configurationError = health?.llm?.errors?.length
-    ? `Backend configuration: ${health.llm.errors.join('; ')}`
-    : error ? String(error.message || error) : null
-  const showAdmin = can('admin')
-
-  const go = (name) => setRoute({ name })
-
-  return <div className="m3 app-shell">
-    <header className="m3-topbar">
-      <button className="m3-brand" onClick={() => go('home')} aria-label="Story Pointer home">
-        <span className="m3-brand-mark"><BrainCircuit size={20} /></span>
-        <span style={{ textAlign: 'left' }}><strong>Story Pointer</strong><small>C4 workspace · evidence-led estimation</small></span>
-      </button>
-      <nav className="m3-topbar-nav">
-        <button className={route.name === 'home' || route.name === 'project' || route.name === 'wizard' ? 'active' : ''} onClick={() => go('home')}>Platforms</button>
-        {showAdmin && <button className={route.name === 'admin' ? 'active' : ''} onClick={() => go('admin')}><ShieldCheck size={14} /> Admin</button>}
-        <a className="m3-topbar-link" href="/help/guide.html" target="_blank" rel="noreferrer" title="Open the interactive user guide in a new tab"><BookOpen size={14} /> Guide</a>
-      </nav>
-      <div className="m3-topbar-status">
-        <span className="m3-chip"><Server size={13} />{config ? (config.llm.provider ? `${config.llm.provider} · ${config.llm.model}` : 'LLM not configured') : 'Checking model…'}</span>
-        {jiraStatuses.map(([name, value]) => <span key={name} className={`m3-chip ${value.status === 'ok' ? 'ok' : 'bad'}`}>{name}</span>)}
-        <UserMenu />
+    ? new Error(`Backend configuration: ${health.llm.errors.join('; ')}`)
+    : null
+  return <div className="app-shell">
+    <header className="topbar"><a className="brand" href="#top" aria-label="Story Pointer home"><span><BrainCircuit size={23} /></span><div><strong>Story Pointer</strong><small>Evidence-led estimation</small></div></a><div className="system-status"><div className="model-badge"><Server size={15} /><span>{config ? (config.llm.provider ? `${config.llm.provider} · ${config.llm.model}` : 'LLM not configured') : 'Checking model...'}</span></div>{jiraStatuses.map(([name, value]) => <StatusBadge key={name} status={value.status}>{name}</StatusBadge>)}</div></header>
+    <main id="top"><section className="hero"><div><span className="eyebrow">Defensible by design</span><h1>A point is only useful when<br />everyone understands <em>why.</em></h1><p>Score the real work, calibrate it against your team’s anchors, and share a conclusion a product owner can grasp in five seconds.</p></div><div className="method-card"><CircleHelp size={20} /><div><strong>How it works</strong><ol><li>Score 12 delivery factors</li><li>Find the true drivers</li><li>Compare fixed anchors</li><li>Conclude, never guess</li></ol></div></div></section>
+      <SourceSwitcher value={source} onChange={(value) => { setSource(value); setError(null) }} />
+      <ErrorCard error={error || configurationError} />
+      <div className="workspace">
+        <div>{source === 'manual' && <StoryForm onSubmit={estimateOne} disabled={loading} />}{source === 'jira' && <JiraBrowser instances={config?.jira_instances || []} issues={issues} onFetch={fetchJira} onEstimate={estimateBatch} loading={loading} />}{source === 'upload' && (upload ? <ColumnMapper upload={upload} onEstimate={estimateUpload} loading={loading} /> : <ExcelUpload onUpload={parseFile} templateUrl={api.templateUrl} loading={loading} />)}</div>
+        <PipelineView steps={steps} active={loading} title={pipelineTitle} />
       </div>
-    </header>
-    {route.name === 'project'
-      ? <>
-        {configurationError && <div className="m3-content" style={{ padding: '16px 28px 0' }}><div className="m3-banner error">{configurationError}</div></div>}
-        <ProjectWorkspace key={route.id} projectId={route.id} config={config} notice={route.notice} />
-      </>
-      : <div className="m3-content" style={{ flex: 1 }}>
-        {configurationError && <div className="m3-banner error">{configurationError}</div>}
-        {route.name === 'home' && <ProjectsHome
-          canCreate={can('platform.create')}
-          onOpen={(id) => setRoute({ name: 'project', id })}
-          onNew={() => setRoute({ name: 'wizard' })}
-          onQuick={() => setRoute({ name: 'quick' })} />}
-        {route.name === 'wizard' && <NewProjectWizard config={config}
-          onDone={(id, notice) => setRoute({ name: 'project', id, notice })}
-          onCancel={() => setRoute({ name: 'home' })} />}
-        {route.name === 'quick' && <>
-          <div className="m3-page-title"><h1>Quick estimate</h1><p>One-off estimation without a platform — form, Jira browse, or spreadsheet.</p></div>
-          <QuickEstimate config={config} />
-        </>}
-        {route.name === 'admin' && (showAdmin ? <AdminConsole /> : <div className="m3-banner error">You don't have access to the admin area.</div>)}
-      </div>}
+      {results.length > 0 && <BatchTable results={results} onSelect={setResult} />}
+      {result && <ResultCard result={result} writeEnabled={config?.jira_write_enabled} onWrite={writePoints} />}
+      {!loading && !result && !results.length && <div className="empty-hint"><span>1</span> Add the story <ChevronRight /><span>2</span> Watch the reasoning build <ChevronRight /><span>3</span> Share the justified estimate</div>}
+    </main>
+    <footer><span>Story Pointer · Reasoning before numbers</span><span>Active model: {config?.llm?.provider || '—'} / {config?.llm?.model || '—'}</span></footer>
   </div>
 }

@@ -19,7 +19,6 @@ class Story(BaseModel):
     components: list[str] = Field(default_factory=list)
     source: Literal["manual", "jira", "upload"] = "manual"
     jira_instance: str | None = None
-    c4_context: dict[str, Any] | None = None
 
     @field_validator("acceptance_criteria", mode="before")
     @classmethod

@@ -1,22 +1,21 @@
-"""FastAPI routes for streaming estimation, Jira, spreadsheet ingestion, and projects."""
+"""FastAPI routes for streaming estimation, Jira, and spreadsheet ingestion."""
 
 from __future__ import annotations
 
 import json
 import uuid
-from contextlib import AsyncExitStack, asynccontextmanager
-from typing import Any
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from langchain_core.messages import HumanMessage
 
-from backend.api.streaming import require_llm_config, stream_batch, stream_story
-from backend.c4.router import router as c4_router
+from backend.anchors import ANCHORS
 from backend.config import ConfigurationError, get_settings
 from backend.graph.build import get_estimation_graph
-from backend.graph.checkpoint import set_checkpointer
 from backend.ingest.excel import UploadError, dataframe_payload, read_upload, rows_to_stories, template_workbook
 from backend.jira.client import JiraError
 from backend.jira.registry import get_jira_registry
@@ -26,24 +25,9 @@ from backend.models import (
     ErrorPayload,
     EstimateRequest,
     JiraWriteRequest,
+    Story,
     UploadEstimateRequest,
 )
-from backend.access.router import router as access_router
-from backend.ai.router import router as ai_router
-from backend.auth.deps import resolve_role, restricted_block, route_policy
-from backend.auth.permissions import can
-from backend.integrations.router import router as integrations_router
-from backend.l1arch.router import router as l1arch_router
-from backend.l2arch.router import router as l2arch_router
-from backend.chat.router import router as chat_router
-from backend.l3arch.router import router as l3arch_router
-from backend.l4arch.router import router as l4arch_router
-from backend.planning.router import router as planning_router
-from backend.workflow.router import router as workflow_router
-from backend.projects.router import router as projects_router
-from backend.reporting.router import router as reporting_router
-from backend.resources.router import router as resources_router
-from backend.storage.db import checkpoint_path, init_db
 
 
 def error_response(code: str, message: str, status: int, *, details: Any = None, retryable: bool = False) -> JSONResponse:
@@ -51,90 +35,26 @@ def error_response(code: str, message: str, status: int, *, details: Any = None,
     return JSONResponse(status_code=status, content={"error": payload.model_dump()})
 
 
-async def _install_durable_checkpointer(stack: AsyncExitStack) -> None:
-    """Swap MemorySaver for AsyncSqliteSaver when the optional dependency is installed."""
-    try:
-        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-    except ImportError:
-        return
-
-    class JsonSafeMetadataSaver(AsyncSqliteSaver):
-        """AsyncSqliteSaver serializes metadata with stdlib json, which crashes on
-        LangChain message objects inside node writes. The checkpoint blob itself uses
-        the real serializer, so stringifying metadata values is lossless for resume."""
-
-        async def aput(self, config, checkpoint, metadata, new_versions):
-            safe_metadata = json.loads(json.dumps(metadata, default=str))
-            return await super().aput(config, checkpoint, safe_metadata, new_versions)
-
-    path = checkpoint_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    saver = await stack.enter_async_context(JsonSafeMetadataSaver.from_conn_string(str(path)))
-    set_checkpointer(saver)
-    get_estimation_graph.cache_clear()
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
-    async with AsyncExitStack() as stack:
-        await _install_durable_checkpointer(stack)
-        try:
-            get_settings().validate_startup()
-            validate_factory_config()
-            app.state.configuration_errors = []
-        except ConfigurationError as exc:
-            # Keep diagnostics endpoints alive so the UI can render the startup error.
-            app.state.configuration_errors = exc.errors
-        yield
+    try:
+        get_settings().validate_startup()
+        validate_factory_config()
+        app.state.configuration_errors = []
+    except ConfigurationError as exc:
+        # Keep diagnostics endpoints alive so the UI can render the startup error.
+        app.state.configuration_errors = exc.errors
+    yield
 
 
-app = FastAPI(title="Story Pointer API", version="2.0.0", lifespan=lifespan)
-
-
-@app.middleware("http")
-async def rbac_middleware(request: Request, call_next):
-    """Local demo RBAC: enforce the capability policy for the resolved caller.
-
-    UI-gating remains the primary control; this is defense in depth. OPTIONS
-    (CORS preflight) and public config/login endpoints bypass the check.
-    """
-    if request.method == "OPTIONS":
-        return await call_next(request)
-    requires_auth, capability = route_policy(request.method, request.url.path)
-    if requires_auth:
-        role = resolve_role(request)
-        if role is None:
-            return error_response("unauthenticated", "Sign in required.", 401)
-        if capability and not can(role, capability):
-            return error_response("forbidden", f"Your role does not permit this action ({capability}).", 403)
-        if restricted_block(request.url.path, role):
-            return error_response("forbidden", "This workspace is restricted to managers and admins.", 403)
-    return await call_next(request)
-
-
+app = FastAPI(title="Story Pointer API", version="1.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().cors_origin_list,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
-    expose_headers=["Content-Disposition"],
 )
-app.include_router(projects_router)
-app.include_router(c4_router)
-app.include_router(planning_router)
-app.include_router(resources_router)
-app.include_router(access_router)
-app.include_router(reporting_router)
-app.include_router(ai_router)
-app.include_router(l1arch_router)
-app.include_router(l2arch_router)
-app.include_router(l3arch_router)
-app.include_router(l4arch_router)
-app.include_router(workflow_router)
-app.include_router(chat_router)
-app.include_router(integrations_router)
 
 
 @app.exception_handler(RequestValidationError)
@@ -162,6 +82,66 @@ async def jira_error(_: Request, exc: JiraError) -> JSONResponse:
 @app.exception_handler(UploadError)
 async def upload_error(_: Request, exc: UploadError) -> JSONResponse:
     return error_response("parse_error", str(exc), 400)
+
+
+def require_llm_config(request: Request) -> None:
+    errors = getattr(request.app.state, "configuration_errors", [])
+    if errors:
+        raise HTTPException(status_code=503, detail={"code": "configuration_error", "message": "LLM configuration is incomplete.", "details": errors})
+
+
+def sse(event: str, data: Any) -> bytes:
+    return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n".encode()
+
+
+def public_result(values: dict[str, Any]) -> dict[str, Any]:
+    blocked = {"anchors", "messages", "escalation_required", "refinement"}
+    return {key: value for key, value in values.items() if key not in blocked}
+
+
+async def stream_story(story: Story, session_id: str, refinement: str | None = None) -> AsyncIterator[bytes]:
+    graph = get_estimation_graph()
+    config = {"configurable": {"thread_id": session_id}}
+    initial = {
+        "story": story.model_dump(),
+        "anchors": ANCHORS,
+        "refinement": refinement,
+        "messages": [HumanMessage(content=refinement or f"Estimate: {story.title}")],
+    }
+    yield sse("started", {"session_id": session_id, "title": story.title})
+    try:
+        async for update in graph.astream(initial, config=config, stream_mode="updates"):
+            node = next(iter(update))
+            # Progress carries only completion and safe narrative summaries; the final event is atomic.
+            yield sse("node", {"node": node, "status": "completed"})
+        snapshot = await graph.aget_state(config)
+        result = public_result(dict(snapshot.values))
+        if not result.get("plain_language_why") or not result.get("tldr"):
+            raise RuntimeError("The model returned points without the required explanation")
+        yield sse("result", result)
+    except Exception as exc:
+        yield sse("error", {"code": "estimation_error", "message": str(exc), "retryable": True})
+
+
+async def stream_batch(stories: list[Story], root_session: str, skipped: list[dict[str, Any]] | None = None) -> AsyncIterator[bytes]:
+    yield sse("batch_started", {"count": len(stories), "session_id": root_session, "skipped": skipped or []})
+    results = []
+    for index, story in enumerate(stories):
+        item_session = f"{root_session}:{index}"
+        yield sse("item_started", {"index": index, "title": story.title})
+        async for chunk in stream_story(story, item_session):
+            text = chunk.decode()
+            if text.startswith("event: result"):
+                data = json.loads(text.split("data: ", 1)[1])
+                results.append(data)
+                yield sse("item_result", {"index": index, "result": data})
+            elif text.startswith("event: node"):
+                data = json.loads(text.split("data: ", 1)[1])
+                yield sse("item_node", {"index": index, **data})
+            elif text.startswith("event: error"):
+                data = json.loads(text.split("data: ", 1)[1])
+                yield sse("item_error", {"index": index, **data})
+    yield sse("batch_result", {"results": results, "skipped": skipped or []})
 
 
 @app.get("/health")

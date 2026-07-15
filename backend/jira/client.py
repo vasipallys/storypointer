@@ -114,28 +114,6 @@ class JiraClient:
                 break
         return stories
 
-    async def create_issue(self, project_key: str, issue_type: str, summary: str, description: str = "") -> str:
-        fields: dict[str, Any] = {
-            "project": {"key": project_key},
-            "issuetype": {"name": issue_type},
-            "summary": summary[:255],
-        }
-        if description:
-            if self.config.auth_type == "cloud":
-                # REST v3 requires Atlassian Document Format for rich-text fields.
-                fields["description"] = {
-                    "type": "doc",
-                    "version": 1,
-                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": description}]}],
-                }
-            else:
-                fields["description"] = description
-        payload = await self._request("POST", "issue", json={"fields": fields})
-        key = payload.get("key")
-        if not key:
-            raise JiraError("Jira accepted the issue but returned no key")
-        return key
-
     async def write_points(self, issue_key: str, points: int) -> None:
         field = self.config.story_points_field
         if not field:
