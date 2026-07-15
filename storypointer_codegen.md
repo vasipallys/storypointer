@@ -1004,3 +1004,1770 @@ class EstimationState(TypedDict, total=False):
     refinement: str | None
     messages: Annotated[list[AnyMessage], add_messages]
 ```
+
+### 6.8 `backend/graph/nodes.py`
+
+```python
+"""All estimation node prompts and implementations live here."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+import types
+from typing import Any, Literal, TypeVar, Union, get_args, get_origin
+
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from pydantic import BaseModel
+
+from backend.graph.state import (
+    PARAMETERS,
+    AnchorComparisonOutput,
+    DriversOutput,
+    EstimationState,
+    HiddenTasksOutput,
+    PlainLanguageOutput,
+    PointsOutput,
+    RisksOutput,
+    ScorecardOutput,
+    SplitOutput,
+)
+from backend.llm.factory import get_structured_llm
+
+T = TypeVar("T", bound=BaseModel)
+
+SYSTEM = """You are a senior full-stack agile estimator for a regulated bank.
+The team builds React micro-frontends and Spring Boot microservices on OpenShift.
+Be concrete, cautious, concise, and explain every judgment from the supplied evidence.
+Never invent requirements. Use plain language and modified Fibonacci only."""
+
+
+def _context(state: EstimationState, fields: tuple[str, ...]) -> str:
+    return json.dumps(
+        {field: state.get(field) for field in fields},
+        indent=2,
+        default=str,
+    )
+
+
+def _parse_structured_result(schema: type[T], result: Any) -> T:
+    """Validate structured output, tolerating provider wrappers and JSON envelopes."""
+    candidates: list[Any] = []
+    parsing_error: Exception | None = None
+    if isinstance(result, dict) and {"raw", "parsed", "parsing_error"} <= result.keys():
+        if result["parsed"] is not None:
+            candidates.append(result["parsed"])
+        raw = result.get("raw")
+        candidates.append(getattr(raw, "content", raw))
+        parsing_error = result.get("parsing_error")
+    else:
+        candidates.append(result)
+
+    while candidates:
+        candidate = candidates.pop(0)
+        if candidate is None:
+            continue
+        if isinstance(candidate, schema):
+            return candidate
+        if isinstance(candidate, str):
+            text = candidate.strip()
+            if text.startswith("```"):
+                text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            try:
+                candidates.insert(0, json.loads(text))
+            except json.JSONDecodeError:
+                continue
+            continue
+        if isinstance(candidate, list):
+            # Some Groq models return [echoed_schema, actual_result]. Prefer the last item.
+            candidates[0:0] = list(reversed(candidate))
+            continue
+        if isinstance(candidate, dict):
+            try:
+                return schema.model_validate(candidate)
+            except Exception:
+                for key in ("text", "content", "output"):
+                    if key in candidate:
+                        candidates.append(candidate[key])
+
+    detail = str(parsing_error or "response did not contain a matching JSON object")
+    raise ValueError(detail[:500])
+
+
+def _annotation_contract(annotation: Any, indent: str = "") -> list[str]:
+    """Describe a Pydantic annotation without emitting JSON the model can echo."""
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    if origin is Literal:
+        return ["one of: " + ", ".join(repr(value) for value in args)]
+    if origin is list:
+        item = args[0] if args else Any
+        description = _annotation_contract(item, indent + "  ")
+        return ["array whose items are " + description[0], *description[1:]]
+    if origin in {Union, types.UnionType}:
+        non_null = [arg for arg in args if arg is not type(None)]
+        if len(non_null) == 1:
+            return _annotation_contract(non_null[0], indent)
+        return [" or ".join(_annotation_contract(arg, indent)[0] for arg in non_null)]
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        lines = [f"object `{annotation.__name__}` with fields:"]
+        for name, field in annotation.model_fields.items():
+            nested = _annotation_contract(field.annotation, indent + "  ")
+            requirement = "required" if field.is_required() else "optional"
+            lines.append(f"{indent}  - `{name}` ({requirement}): {nested[0]}")
+            lines.extend(f"{indent}    {line}" for line in nested[1:])
+        return lines
+    names = {str: "string", int: "integer", float: "number", bool: "boolean", Any: "any JSON value"}
+    return [names.get(annotation, getattr(annotation, "__name__", str(annotation)))]
+
+
+def _schema_contract(schema: type[BaseModel]) -> str:
+    """Create plain-text output instructions rather than an echoable JSON Schema."""
+    lines = [
+        f"Return one JSON object for `{schema.__name__}`. Do not return the schema itself.",
+        "Fields:",
+    ]
+    for name, field in schema.model_fields.items():
+        description = _annotation_contract(field.annotation)
+        requirement = "required" if field.is_required() else "optional"
+        constraints = []
+        for item in field.metadata:
+            if hasattr(item, "min_length"):
+                constraints.append(f"minimum {item.min_length} items/characters")
+            if hasattr(item, "max_length"):
+                constraints.append(f"maximum {item.max_length} items/characters")
+        suffix = f"; {', '.join(constraints)}" if constraints else ""
+        lines.append(f"- `{name}` ({requirement}): {description[0]}{suffix}")
+        lines.extend(f"  {line}" for line in description[1:])
+    return "\n".join(lines)
+
+
+def _retry_delay(error: Exception, attempt: int) -> float:
+    """Honor provider retry hints, with a small fallback backoff."""
+    match = re.search(r"try again in\s+([0-9.]+)s", str(error), flags=re.IGNORECASE)
+    return min(float(match.group(1)) + 0.5, 65.0) if match else float(2 ** attempt)
+
+
+async def _invoke(
+    schema: type[T],
+    prompt: str,
+    state: EstimationState,
+    context_fields: tuple[str, ...],
+) -> T:
+    model = get_structured_llm(schema)
+    output_contract = _schema_contract(schema)
+    messages = [
+        SystemMessage(content=SYSTEM),
+        HumanMessage(
+            content=(
+                f"{prompt}\n\nReturn only one valid JSON object matching the contract exactly. "
+                f"The response root must be an object, never an array. Do not use markdown "
+                f"or function-call tags.\nOUTPUT CONTRACT:\n{output_contract}"
+                f"\n\nCONTEXT:\n{_context(state, context_fields)}"
+            )
+        ),
+    ]
+    last_error: Exception | None = None
+    for _ in range(2):
+        try:
+            result = await model.ainvoke(messages)
+            return _parse_structured_result(schema, result)
+        except Exception as exc:
+            last_error = RuntimeError(str(exc)[:500])
+            if len(messages) == 2:
+                await asyncio.sleep(_retry_delay(exc, 0))
+            messages.append(
+                HumanMessage(content="The prior output was invalid. Return only schema-valid JSON with every required field.")
+            )
+    raise RuntimeError(f"The model could not produce valid {schema.__name__} output: {last_error}")
+
+
+def _trace(node: str, summary: str) -> list[AIMessage]:
+    return [AIMessage(content=summary, name=node)]
+
+
+async def score_parameters(state: EstimationState) -> dict[str, Any]:
+    result = await _invoke(
+        ScorecardOutput,
+        f"Score exactly these 12 parameters once each as Low, Medium, or High, with a one-line evidence-based reason: {', '.join(PARAMETERS)}.",
+        state,
+        ("story", "refinement"),
+    )
+    found = {item.parameter for item in result.scores}
+    if found != set(PARAMETERS):
+        raise RuntimeError(f"Scorecard omitted parameters: {sorted(set(PARAMETERS) - found)}")
+    scores = [item.model_dump() for item in result.scores]
+    return {"scorecard": scores, "messages": _trace("score_parameters", "Scored all estimation parameters.")}
+
+
+async def identify_drivers(state: EstimationState) -> dict[str, Any]:
+    result = await _invoke(
+        DriversOutput,
+        "Name the 2-3 scorecard parameters that genuinely decide the estimate. Explain why they dominate.",
+        state,
+        ("story", "scorecard"),
+    )
+    return {"drivers": result.drivers, "drivers_explanation": result.explanation, "messages": _trace("identify_drivers", "Identified the estimate drivers.")}
+
+
+async def compare_to_anchors(state: EstimationState) -> dict[str, Any]:
+    result = await _invoke(
+        AnchorComparisonOutput,
+        "Compare explicitly with named fixed anchors and their points. Say bigger than, smaller than, or similar to each selected anchor and why.",
+        state,
+        ("story", "scorecard", "drivers", "anchors"),
+    )
+    return {"anchor_comparison": result.comparison, "anchor_titles": result.anchor_titles, "messages": _trace("compare_to_anchors", "Compared the story with calibration anchors.")}
+
+
+async def derive_points(state: EstimationState) -> dict[str, Any]:
+    result = await _invoke(
+        PointsOutput,
+        "Conclude 1, 2, 3, 5, 8, or 13 strictly as a consequence of the scorecard, drivers, and anchor comparison. Defend the conclusion; do not guess.",
+        state,
+        ("story", "scorecard", "drivers", "anchor_comparison"),
+    )
+    uncertainty = next((item["score"] for item in state["scorecard"] if item["parameter"] == "uncertainty"), "Low")
+    escalation = result.points == 13 or uncertainty == "High"
+    return {"points": result.points, "points_derivation": result.derivation, "escalation_required": escalation, "messages": _trace("derive_points", "Derived a Fibonacci estimate from the evidence.")}
+
+
+async def escalation_branch(state: EstimationState) -> dict[str, Any]:
+    return {"spike_recommended": True, "spike_reason": "The estimate is 13 or uncertainty is high; reduce uncertainty before commitment.", "messages": _trace("spike_split_branch", "Flagged the story for spike/split treatment.")}
+
+
+def route_after_points(state: EstimationState) -> str:
+    return "escalate" if state.get("escalation_required") else "continue"
+
+
+async def write_plain_language_reasoning(state: EstimationState) -> dict[str, Any]:
+    result = await _invoke(
+        PlainLanguageOutput,
+        "Write a 3-5 sentence 'Why this is an N' explanation for a product owner, naming drivers and an anchor in everyday terms. Also write a one-line TL;DR beginning with 'N -'. Provide React, Spring, existing-code effort and optimistic/likely/pessimistic person-days.",
+        state,
+        ("story", "drivers", "anchor_comparison", "points", "points_derivation"),
+    )
+    return {"plain_language_why": result.plain_language_why, "tldr": result.tldr, "effort": result.effort.model_dump(), "messages": _trace("write_plain_language_reasoning", "Explained the estimate in plain language.")}
+
+
+async def detect_hidden_tasks(state: EstimationState) -> dict[str, Any]:
+    result = await _invoke(
+        HiddenTasksOutput,
+        "Surface sub-tasks implied by the acceptance criteria but easy to miss, especially audit, entitlement, data residency, cross-market, deployment, and testing work. For each, say why it adds weight. Return none when evidence does not imply any.",
+        state,
+        ("story", "scorecard", "points"),
+    )
+    return {"hidden_tasks": [item.model_dump() for item in result.hidden_tasks], "messages": _trace("detect_hidden_tasks", "Checked acceptance criteria for hidden work.")}
+
+
+async def assess_risks(state: EstimationState) -> dict[str, Any]:
+    result = await _invoke(
+        RisksOutput,
+        "Give the top 3 concrete risks or unknowns and explicit assumptions. Recommend a spike when uncertainty is high. Preserve an already-triggered spike recommendation.",
+        state,
+        ("story", "scorecard", "points", "hidden_tasks", "spike_recommended"),
+    )
+    spike = state.get("spike_recommended", False) or result.spike_recommended
+    reason = state.get("spike_reason") or result.spike_reason
+    return {"risks": [item.model_dump() for item in result.risks], "assumptions": result.assumptions, "spike_recommended": spike, "spike_reason": reason, "messages": _trace("assess_risks", "Assessed risks, assumptions, and spike need.")}
+
+
+async def recommend_split(state: EstimationState) -> dict[str, Any]:
+    result = await _invoke(
+        SplitOutput,
+        "Recommend whether to split. A 13 must be split and must include proposed independently valuable sub-stories with suggested Fibonacci sizes in their text. Avoid splitting merely by technical layer.",
+        state,
+        ("story", "points", "drivers", "risks", "spike_recommended"),
+    )
+    if state.get("points") == 13:
+        result.split_recommended = True
+    return {"split_recommendation": result.model_dump(), "messages": _trace("recommend_split", "Completed the split recommendation.")}
+```
+
+### 6.9 `backend/graph/build.py`
+
+```python
+"""LangGraph StateGraph wiring and checkpointed compiled graph."""
+
+from __future__ import annotations
+
+from functools import lru_cache
+
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, StateGraph
+
+from backend.graph.nodes import (
+    assess_risks,
+    compare_to_anchors,
+    derive_points,
+    detect_hidden_tasks,
+    escalation_branch,
+    identify_drivers,
+    recommend_split,
+    route_after_points,
+    score_parameters,
+    write_plain_language_reasoning,
+)
+from backend.graph.state import EstimationState
+
+
+@lru_cache
+def get_estimation_graph():
+    builder = StateGraph(EstimationState)
+    builder.add_node("score_parameters", score_parameters)
+    builder.add_node("identify_drivers", identify_drivers)
+    builder.add_node("compare_to_anchors", compare_to_anchors)
+    builder.add_node("derive_points", derive_points)
+    builder.add_node("spike_split_branch", escalation_branch)
+    builder.add_node("write_plain_language_reasoning", write_plain_language_reasoning)
+    builder.add_node("detect_hidden_tasks", detect_hidden_tasks)
+    builder.add_node("assess_risks", assess_risks)
+    builder.add_node("recommend_split", recommend_split)
+
+    builder.add_edge(START, "score_parameters")
+    builder.add_edge("score_parameters", "identify_drivers")
+    builder.add_edge("identify_drivers", "compare_to_anchors")
+    builder.add_edge("compare_to_anchors", "derive_points")
+    builder.add_conditional_edges(
+        "derive_points",
+        route_after_points,
+        {"escalate": "spike_split_branch", "continue": "write_plain_language_reasoning"},
+    )
+    builder.add_edge("spike_split_branch", "write_plain_language_reasoning")
+    builder.add_edge("write_plain_language_reasoning", "detect_hidden_tasks")
+    builder.add_edge("detect_hidden_tasks", "assess_risks")
+    builder.add_edge("assess_risks", "recommend_split")
+    builder.add_edge("recommend_split", END)
+    return builder.compile(checkpointer=MemorySaver())
+```
+
+### 6.10 `backend/api/main.py`
+
+```python
+"""FastAPI routes for streaming estimation, Jira, and spreadsheet ingestion."""
+
+from __future__ import annotations
+
+import json
+import uuid
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator
+
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from langchain_core.messages import HumanMessage
+
+from backend.anchors import ANCHORS
+from backend.config import ConfigurationError, get_settings
+from backend.graph.build import get_estimation_graph
+from backend.ingest.excel import UploadError, dataframe_payload, read_upload, rows_to_stories, template_workbook
+from backend.jira.client import JiraError
+from backend.jira.registry import get_jira_registry
+from backend.llm.factory import validate_factory_config
+from backend.models import (
+    BatchEstimateRequest,
+    ErrorPayload,
+    EstimateRequest,
+    JiraWriteRequest,
+    Story,
+    UploadEstimateRequest,
+)
+
+
+def error_response(code: str, message: str, status: int, *, details: Any = None, retryable: bool = False) -> JSONResponse:
+    payload = ErrorPayload(code=code, message=message, details=details, retryable=retryable)
+    return JSONResponse(status_code=status, content={"error": payload.model_dump()})
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        get_settings().validate_startup()
+        validate_factory_config()
+        app.state.configuration_errors = []
+    except ConfigurationError as exc:
+        # Keep diagnostics endpoints alive so the UI can render the startup error.
+        app.state.configuration_errors = exc.errors
+    yield
+
+
+app = FastAPI(title="Story Pointer API", version="1.0.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=get_settings().cors_origin_list,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+    return error_response("validation_error", "The request contains invalid fields.", 422, details=exc.errors())
+
+
+@app.exception_handler(HTTPException)
+async def http_error(_: Request, exc: HTTPException) -> JSONResponse:
+    detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+    return error_response(
+        detail.get("code", "http_error"),
+        detail.get("message", "The request could not be completed."),
+        exc.status_code,
+        details=detail.get("details"),
+    )
+
+
+@app.exception_handler(JiraError)
+async def jira_error(_: Request, exc: JiraError) -> JSONResponse:
+    status = 502 if exc.status is None or exc.status >= 500 else 400
+    return error_response("jira_error", str(exc), status, retryable=exc.retryable)
+
+
+@app.exception_handler(UploadError)
+async def upload_error(_: Request, exc: UploadError) -> JSONResponse:
+    return error_response("parse_error", str(exc), 400)
+
+
+def require_llm_config(request: Request) -> None:
+    errors = getattr(request.app.state, "configuration_errors", [])
+    if errors:
+        raise HTTPException(status_code=503, detail={"code": "configuration_error", "message": "LLM configuration is incomplete.", "details": errors})
+
+
+def sse(event: str, data: Any) -> bytes:
+    return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n".encode()
+
+
+def public_result(values: dict[str, Any]) -> dict[str, Any]:
+    blocked = {"anchors", "messages", "escalation_required", "refinement"}
+    return {key: value for key, value in values.items() if key not in blocked}
+
+
+async def stream_story(story: Story, session_id: str, refinement: str | None = None) -> AsyncIterator[bytes]:
+    graph = get_estimation_graph()
+    config = {"configurable": {"thread_id": session_id}}
+    initial = {
+        "story": story.model_dump(),
+        "anchors": ANCHORS,
+        "refinement": refinement,
+        "messages": [HumanMessage(content=refinement or f"Estimate: {story.title}")],
+    }
+    yield sse("started", {"session_id": session_id, "title": story.title})
+    try:
+        async for update in graph.astream(initial, config=config, stream_mode="updates"):
+            node = next(iter(update))
+            # Progress carries only completion and safe narrative summaries; the final event is atomic.
+            yield sse("node", {"node": node, "status": "completed"})
+        snapshot = await graph.aget_state(config)
+        result = public_result(dict(snapshot.values))
+        if not result.get("plain_language_why") or not result.get("tldr"):
+            raise RuntimeError("The model returned points without the required explanation")
+        yield sse("result", result)
+    except Exception as exc:
+        yield sse("error", {"code": "estimation_error", "message": str(exc), "retryable": True})
+
+
+async def stream_batch(stories: list[Story], root_session: str, skipped: list[dict[str, Any]] | None = None) -> AsyncIterator[bytes]:
+    yield sse("batch_started", {"count": len(stories), "session_id": root_session, "skipped": skipped or []})
+    results = []
+    for index, story in enumerate(stories):
+        item_session = f"{root_session}:{index}"
+        yield sse("item_started", {"index": index, "title": story.title})
+        async for chunk in stream_story(story, item_session):
+            text = chunk.decode()
+            if text.startswith("event: result"):
+                data = json.loads(text.split("data: ", 1)[1])
+                results.append(data)
+                yield sse("item_result", {"index": index, "result": data})
+            elif text.startswith("event: node"):
+                data = json.loads(text.split("data: ", 1)[1])
+                yield sse("item_node", {"index": index, **data})
+            elif text.startswith("event: error"):
+                data = json.loads(text.split("data: ", 1)[1])
+                yield sse("item_error", {"index": index, **data})
+    yield sse("batch_result", {"results": results, "skipped": skipped or []})
+
+
+@app.get("/health")
+async def health(request: Request) -> dict[str, Any]:
+    errors = getattr(request.app.state, "configuration_errors", [])
+    return {
+        "status": "degraded" if errors else "ok",
+        "llm": {"status": "configuration_error" if errors else "configured", "errors": errors},
+        "jira": await get_jira_registry().health(),
+    }
+
+
+@app.get("/config")
+async def active_config() -> dict[str, Any]:
+    settings = get_settings()
+    return {
+        "llm": {"provider": settings.llm_provider, "model": settings.llm_model},
+        "jira_instances": get_jira_registry().list_instances(),
+        "jira_write_enabled": settings.jira_write_enabled,
+    }
+
+
+@app.get("/jira/instances")
+async def jira_instances() -> list[dict[str, str]]:
+    return get_jira_registry().list_instances()
+
+
+@app.get("/jira/{instance}/project/{code}/issues")
+async def jira_issues(
+    instance: str,
+    code: str,
+    status: str | None = None,
+    sprint: str | None = None,
+    page_size: int = Query(50, ge=1, le=100),
+    max_issues: int = Query(500, ge=1, le=1000),
+) -> list[dict[str, Any]]:
+    stories = await get_jira_registry().get_client(instance).fetch_project_issues(
+        code, status=status, sprint=sprint, page_size=page_size, max_issues=max_issues
+    )
+    return [story.model_dump() for story in stories]
+
+
+@app.post("/upload/parse")
+async def parse_upload(file: UploadFile = File(...)) -> dict[str, Any]:
+    content = await file.read()
+    if len(content) > 15 * 1024 * 1024:
+        raise UploadError("File exceeds the 15 MB upload limit")
+    return dataframe_payload(read_upload(content, file.filename or "upload"))
+
+
+@app.get("/upload/template")
+async def upload_template() -> Response:
+    return Response(
+        template_workbook(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="story-pointer-template.xlsx"'},
+    )
+
+
+@app.post("/estimate")
+async def estimate(payload: EstimateRequest, request: Request) -> StreamingResponse:
+    require_llm_config(request)
+    session = payload.session_id or str(uuid.uuid4())
+    return StreamingResponse(stream_story(payload.story, session, payload.refinement), media_type="text/event-stream")
+
+
+@app.post("/estimate/batch")
+async def estimate_batch(payload: BatchEstimateRequest, request: Request) -> StreamingResponse:
+    require_llm_config(request)
+    session = payload.session_id or str(uuid.uuid4())
+    return StreamingResponse(stream_batch(payload.stories, session), media_type="text/event-stream")
+
+
+@app.post("/upload/estimate")
+async def upload_estimate(payload: UploadEstimateRequest, request: Request) -> StreamingResponse:
+    require_llm_config(request)
+    stories, skipped = rows_to_stories(payload.rows, payload.mapping)
+    if not stories:
+        raise UploadError("No valid rows remain after mapping")
+    session = payload.session_id or str(uuid.uuid4())
+    return StreamingResponse(stream_batch(stories, session, skipped), media_type="text/event-stream")
+
+
+@app.post("/jira/{instance}/{issue_key}/points")
+async def write_jira_points(instance: str, issue_key: str, payload: JiraWriteRequest) -> dict[str, Any]:
+    settings = get_settings()
+    if not settings.jira_write_enabled:
+        raise HTTPException(status_code=403, detail={"code": "write_disabled", "message": "Jira write-back is disabled by configuration."})
+    if not payload.confirm:
+        raise HTTPException(status_code=400, detail={"code": "confirmation_required", "message": "Set confirm=true after explicit user confirmation."})
+    await get_jira_registry().get_client(instance).write_points(issue_key, payload.points)
+    return {"status": "updated", "issue_key": issue_key, "points": payload.points}
+```
+
+### 6.11 `backend/jira/client.py`
+
+```python
+"""Small async Jira REST v3/v2 wrapper using httpx."""
+
+from __future__ import annotations
+
+import re
+from typing import Any
+
+import httpx
+
+from backend.config import JiraInstanceSettings
+from backend.jira.mapping import issue_to_story
+from backend.models import Story
+
+
+class JiraError(RuntimeError):
+    def __init__(self, message: str, *, status: int | None = None, retryable: bool = False) -> None:
+        self.status = status
+        self.retryable = retryable
+        super().__init__(message)
+
+
+class JiraClient:
+    """Read Jira issues and perform an explicitly gated points update."""
+
+    def __init__(self, config: JiraInstanceSettings) -> None:
+        self.config = config
+
+    def _headers_and_auth(self) -> tuple[dict[str, str], httpx.Auth | None]:
+        token = self.config.api_token.get_secret_value()
+        if self.config.auth_type == "cloud":
+            return {"Accept": "application/json"}, httpx.BasicAuth(self.config.email or "", token)
+        return {"Accept": "application/json", "Authorization": f"Bearer {token}"}, None
+
+    @property
+    def api_version(self) -> str:
+        return "3" if self.config.auth_type == "cloud" else "2"
+
+    async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        headers, auth = self._headers_and_auth()
+        url = f"{self.config.base_url}/rest/api/{self.api_version}/{path.lstrip('/')}"
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=30, headers=headers, auth=auth) as client:
+                    response = await client.request(method, url, **kwargs)
+                if response.status_code >= 400:
+                    detail = response.json() if "json" in response.headers.get("content-type", "") else response.text
+                    retryable = response.status_code in {429, 502, 503, 504}
+                    if retryable and attempt == 0:
+                        continue
+                    raise JiraError(
+                        f"Jira returned {response.status_code}: {detail}",
+                        status=response.status_code,
+                        retryable=retryable,
+                    )
+                return response.json() if response.content else {}
+            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                last_error = exc
+                if attempt == 0:
+                    continue
+        raise JiraError(f"Could not reach Jira: {last_error}", retryable=True)
+
+    async def health(self) -> dict[str, Any]:
+        try:
+            await self._request("GET", "myself")
+            return {"status": "ok", "message": "Connected"}
+        except JiraError as exc:
+            return {"status": "error", "message": str(exc), "retryable": exc.retryable}
+
+    async def fetch_project_issues(
+        self,
+        project_code: str,
+        *,
+        status: str | None = None,
+        sprint: str | None = None,
+        page_size: int = 50,
+        max_issues: int = 500,
+    ) -> list[Story]:
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,49}", project_code):
+            raise JiraError("Project code contains invalid characters")
+        clauses = [f'project = "{project_code}"']
+        if status:
+            clauses.append(f'status = "{status.replace(chr(34), chr(92) + chr(34))}"')
+        if sprint:
+            clauses.append(f'sprint = "{sprint.replace(chr(34), chr(92) + chr(34))}"')
+        jql = " AND ".join(clauses) + " ORDER BY created DESC"
+        fields = ["summary", "description", "status", "labels", "components"]
+        if self.config.story_points_field:
+            fields.append(self.config.story_points_field)
+        if self.config.ac_field:
+            fields.append(self.config.ac_field)
+
+        stories: list[Story] = []
+        start_at = 0
+        next_page_token: str | None = None
+        while len(stories) < max_issues:
+            size = min(page_size, max_issues - len(stories))
+            params = {"jql": jql, "maxResults": size, "fields": ",".join(fields)}
+            if self.config.auth_type == "cloud":
+                if next_page_token:
+                    params["nextPageToken"] = next_page_token
+                payload = await self._request("GET", "search/jql", params=params)
+            else:
+                params["startAt"] = start_at
+                payload = await self._request("GET", "search", params=params)
+            issues = payload.get("issues") or []
+            stories.extend(issue_to_story(issue, self.config) for issue in issues)
+            start_at += len(issues)
+            if self.config.auth_type == "cloud":
+                next_page_token = payload.get("nextPageToken")
+                if not issues or payload.get("isLast") is True or not next_page_token:
+                    break
+            elif not issues or start_at >= payload.get("total", 0):
+                break
+        return stories
+
+    async def write_points(self, issue_key: str, points: int) -> None:
+        field = self.config.story_points_field
+        if not field:
+            raise JiraError("Story Points field is not configured for this Jira instance")
+        await self._request("PUT", f"issue/{issue_key}", json={"fields": {field: points}})
+```
+
+### 6.12 `backend/jira/mapping.py`
+
+```python
+"""Custom-field-aware Jira issue mapping in one tunable module."""
+
+from __future__ import annotations
+
+import re
+from typing import Any
+
+from backend.config import JiraInstanceSettings
+from backend.models import Story
+
+
+def adf_to_text(value: Any) -> str:
+    """Flatten Jira Cloud Atlassian Document Format or accept plain server text."""
+    if not value:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "\n".join(filter(None, (adf_to_text(item) for item in value)))
+    if isinstance(value, dict):
+        text = value.get("text", "")
+        children = adf_to_text(value.get("content", []))
+        return "\n".join(filter(None, (text, children)))
+    return str(value)
+
+
+def split_acceptance_criteria(value: Any, description: str) -> list[str]:
+    text = adf_to_text(value).strip()
+    if not text:
+        match = re.search(
+            r"(?:acceptance criteria|given\s.+?when\s.+?then)\s*:?\s*(.+)",
+            description,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        text = match.group(1) if match else ""
+    lines = re.split(r"(?:\r?\n|;)+", text)
+    return [re.sub(r"^[\s*\-\d.)]+", "", line).strip() for line in lines if line.strip()]
+
+
+def issue_to_story(issue: dict[str, Any], config: JiraInstanceSettings) -> Story:
+    fields = issue.get("fields") or {}
+    description = adf_to_text(fields.get("description"))
+    ac_value = fields.get(config.ac_field) if config.ac_field else None
+    points = fields.get(config.story_points_field) if config.story_points_field else None
+    return Story(
+        title=fields.get("summary") or issue.get("key") or "Untitled Jira issue",
+        user_story=description,
+        acceptance_criteria=split_acceptance_criteria(ac_value, description),
+        existing_points=points,
+        key=issue.get("key"),
+        status=(fields.get("status") or {}).get("name"),
+        labels=fields.get("labels") or [],
+        components=[item.get("name", "") for item in fields.get("components") or [] if item.get("name")],
+        source="jira",
+        jira_instance=config.name,
+    )
+```
+
+### 6.13 `backend/jira/registry.py`
+
+```python
+"""Named Jira instance registry, mirroring the LLM factory boundary."""
+
+from __future__ import annotations
+
+from functools import lru_cache
+
+from backend.config import JiraInstanceSettings, get_settings
+from backend.jira.client import JiraClient, JiraError
+
+
+class JiraRegistry:
+    def __init__(self, configs: dict[str, JiraInstanceSettings]) -> None:
+        self.configs = configs
+        self._clients: dict[str, JiraClient] = {}
+
+    def list_instances(self) -> list[dict[str, str]]:
+        return [{"name": item.name, "auth_type": item.auth_type} for item in self.configs.values()]
+
+    def get_client(self, name: str) -> JiraClient:
+        key = name.lower()
+        if key not in self.configs:
+            raise JiraError(f"Unknown Jira instance '{name}'")
+        config = self.configs[key]
+        missing = []
+        if not config.base_url:
+            missing.append("BASE_URL")
+        if not config.api_token.get_secret_value():
+            missing.append("API_TOKEN")
+        if config.auth_type == "cloud" and not config.email:
+            missing.append("EMAIL")
+        if missing:
+            raise JiraError(f"Jira instance '{name}' is missing: {', '.join(missing)}")
+        if key not in self._clients:
+            self._clients[key] = JiraClient(config)
+        return self._clients[key]
+
+    async def health(self) -> dict[str, dict]:
+        results = {}
+        for name in self.configs:
+            try:
+                results[name] = await self.get_client(name).health()
+            except JiraError as exc:
+                results[name] = {"status": "error", "message": str(exc), "retryable": False}
+        return results
+
+
+@lru_cache
+def get_jira_registry() -> JiraRegistry:
+    return JiraRegistry(get_settings().jira_configs())
+```
+
+### 6.14 `backend/ingest/excel.py`
+
+```python
+"""Excel/CSV detection, mapping, validation, and template generation."""
+
+from __future__ import annotations
+
+import io
+import json
+import re
+from difflib import SequenceMatcher
+from pathlib import Path
+from typing import Any, BinaryIO
+
+import pandas as pd
+
+from backend.models import Story
+
+TARGET_ALIASES = {
+    "title": ["title", "summary", "story title", "issue", "name"],
+    "user_story": ["user story", "description", "story", "details", "requirement"],
+    "acceptance_criteria": ["acceptance criteria", "acs", "ac", "criteria", "conditions of satisfaction"],
+    "technical_breakdown": ["technical breakdown", "technical notes", "implementation", "dev notes"],
+    "existing_points": ["existing points", "story points", "points", "sp", "estimate"],
+}
+
+
+class UploadError(ValueError):
+    pass
+
+
+def _score(header: str, alias: str) -> float:
+    clean_header = re.sub(r"[^a-z0-9]+", " ", header.lower()).strip()
+    if clean_header == alias:
+        return 1.0
+    if alias in clean_header or clean_header in alias:
+        return 0.9
+    return SequenceMatcher(None, clean_header, alias).ratio()
+
+
+def suggest_mapping(columns: list[str]) -> dict[str, str | None]:
+    suggestions: dict[str, str | None] = {}
+    used: set[str] = set()
+    for target, aliases in TARGET_ALIASES.items():
+        candidates = [(max(_score(column, alias) for alias in aliases), column) for column in columns if column not in used]
+        score, column = max(candidates, default=(0.0, ""))
+        suggestions[target] = column if score >= 0.55 else None
+        if suggestions[target]:
+            used.add(column)
+    return suggestions
+
+
+def read_upload(content: bytes, filename: str) -> pd.DataFrame:
+    suffix = Path(filename).suffix.lower()
+    try:
+        if suffix == ".csv":
+            return pd.read_csv(io.BytesIO(content), dtype=object).fillna("")
+        if suffix in {".xlsx", ".xls"}:
+            engine = "openpyxl" if suffix == ".xlsx" else "xlrd"
+            return pd.read_excel(io.BytesIO(content), dtype=object, engine=engine).fillna("")
+    except Exception as exc:
+        raise UploadError(f"Could not parse {filename}: {exc}") from exc
+    raise UploadError("Use a .csv, .xlsx, or .xls file")
+
+
+def dataframe_payload(frame: pd.DataFrame, preview_rows: int = 20) -> dict[str, Any]:
+    columns = [str(column) for column in frame.columns]
+    rows = json.loads(frame.to_json(orient="records", date_format="iso"))
+    rows = [{key: "" if value is None else value for key, value in row.items()} for row in rows]
+    return {
+        "columns": columns,
+        "suggested_mapping": suggest_mapping(columns),
+        "preview": rows[:preview_rows],
+        "rows": rows,
+        "row_count": len(rows),
+    }
+
+
+def rows_to_stories(
+    rows: list[dict[str, Any]], mapping: dict[str, str | None]
+) -> tuple[list[Story], list[dict[str, Any]]]:
+    title_column = mapping.get("title")
+    if not title_column:
+        raise UploadError("Map a source column to Title before estimating")
+    stories: list[Story] = []
+    skipped: list[dict[str, Any]] = []
+    for index, row in enumerate(rows, start=2):
+        title = str(row.get(title_column, "")).strip()
+        if not title:
+            skipped.append({"row": index, "reason": "Title is blank"})
+            continue
+        points_raw = row.get(mapping.get("existing_points") or "", "")
+        try:
+            points = float(points_raw) if str(points_raw).strip() else None
+        except (TypeError, ValueError):
+            points = None
+        stories.append(
+            Story(
+                title=title,
+                user_story=str(row.get(mapping.get("user_story") or "", "")).strip(),
+                acceptance_criteria=row.get(mapping.get("acceptance_criteria") or "", ""),
+                technical_breakdown=str(row.get(mapping.get("technical_breakdown") or "", "")).strip() or None,
+                existing_points=points,
+                source="upload",
+            )
+        )
+    return stories, skipped
+
+
+def template_workbook() -> bytes:
+    frame = pd.DataFrame(
+        [
+            {
+                "Title": "Add beneficiary confirmation",
+                "User Story": "As a customer, I want to confirm beneficiary details before payment.",
+                "Acceptance Criteria": "Show beneficiary name\nRecord confirmation in audit trail",
+                "Technical Breakdown": "React confirmation panel; Spring audit event",
+                "Existing Points": "",
+            }
+        ]
+    )
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        frame.to_excel(writer, index=False, sheet_name="Stories")
+        sheet = writer.book["Stories"]
+        sheet.freeze_panes = "A2"
+        for cell in sheet[1]:
+            cell.font = cell.font.copy(bold=True)
+        for column, width in {"A": 34, "B": 60, "C": 60, "D": 50, "E": 18}.items():
+            sheet.column_dimensions[column].width = width
+    return output.getvalue()
+```
+
+### 6.15 `backend/tests/test_graph_routing.py`
+
+```python
+from backend.graph.nodes import route_after_points
+
+
+def test_high_uncertainty_or_thirteen_routes_to_escalation():
+    assert route_after_points({"escalation_required": True}) == "escalate"
+    assert route_after_points({"escalation_required": False}) == "continue"
+```
+
+### 6.16 `backend/tests/test_ingest.py`
+
+```python
+import pandas as pd
+
+from backend.ingest.excel import dataframe_payload, rows_to_stories, suggest_mapping
+
+
+def test_header_mapping_and_row_validation():
+    mapping = suggest_mapping(["Summary", "Description", "Acceptance Criteria", "SP"])
+    assert mapping == {
+        "title": "Summary",
+        "user_story": "Description",
+        "acceptance_criteria": "Acceptance Criteria",
+        "technical_breakdown": None,
+        "existing_points": "SP",
+    }
+    rows = [
+        {"Summary": "Valid", "Description": "As a user", "Acceptance Criteria": "One; Two", "SP": "5"},
+        {"Summary": "", "Description": "Missing title", "Acceptance Criteria": "", "SP": "bad"},
+    ]
+    stories, skipped = rows_to_stories(rows, mapping)
+    assert stories[0].acceptance_criteria == ["One", "Two"]
+    assert stories[0].existing_points == 5
+    assert skipped == [{"row": 3, "reason": "Title is blank"}]
+
+
+def test_dataframe_payload_preserves_all_rows_and_limits_preview():
+    payload = dataframe_payload(pd.DataFrame([{"Title": str(index)} for index in range(25)]))
+    assert payload["row_count"] == 25
+    assert len(payload["preview"]) == 20
+    assert len(payload["rows"]) == 25
+```
+
+### 6.17 `backend/tests/test_mapping.py`
+
+```python
+from pydantic import SecretStr
+
+from backend.config import JiraInstanceSettings
+from backend.jira.mapping import adf_to_text, issue_to_story
+
+
+def config():
+    return JiraInstanceSettings(
+        name="prod", base_url="https://example.atlassian.net", auth_type="cloud",
+        email="a@example.com", api_token=SecretStr("secret"),
+        story_points_field="customfield_1", ac_field="customfield_2",
+    )
+
+
+def test_adf_and_custom_fields_are_mapped():
+    issue = {"key": "PAY-1", "fields": {
+        "summary": "Confirm payment", "description": {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Story body"}]}]},
+        "customfield_1": 5, "customfield_2": "First\nSecond", "status": {"name": "Ready"},
+        "labels": ["payments"], "components": [{"name": "UI"}],
+    }}
+    story = issue_to_story(issue, config())
+    assert adf_to_text(issue["fields"]["description"]).strip() == "Story body"
+    assert story.key == "PAY-1"
+    assert story.existing_points == 5
+    assert story.acceptance_criteria == ["First", "Second"]
+
+
+def test_description_acceptance_criteria_fallback():
+    issue = {"key": "PAY-2", "fields": {"summary": "Fallback", "description": "Context\nAcceptance Criteria:\n- Audit the change\n- Enforce entitlement"}}
+    story = issue_to_story(issue, config().model_copy(update={"ac_field": None}))
+    assert story.acceptance_criteria == ["Audit the change", "Enforce entitlement"]
+```
+
+### 6.18 `backend/tests/test_structured_output.py`
+
+```python
+from langchain_core.messages import AIMessage
+
+from backend.graph.nodes import _parse_structured_result, _schema_contract
+from backend.graph.state import DriversOutput
+
+
+def test_parses_provider_raw_json_when_langchain_parser_failed():
+    result = {
+        "raw": AIMessage(content='{"drivers":["dependencies","uncertainty"],"explanation":"External integration determines the estimate."}'),
+        "parsed": None,
+        "parsing_error": ValueError("provider parser failed"),
+    }
+    parsed = _parse_structured_result(DriversOutput, result)
+    assert parsed.drivers == ["dependencies", "uncertainty"]
+
+
+def test_uses_actual_result_when_provider_echoes_schema_in_array():
+    result = {
+        "raw": AIMessage(content='[{"title":"DriversOutput"},{"drivers":["dependencies","testing"],"explanation":"Integration and verification dominate."}]'),
+        "parsed": None,
+        "parsing_error": ValueError("root should be an object"),
+    }
+    parsed = _parse_structured_result(DriversOutput, result)
+    assert parsed.drivers == ["dependencies", "testing"]
+
+
+def test_contract_is_plain_text_that_cannot_be_echoed_as_json_schema():
+    contract = _schema_contract(DriversOutput)
+    assert "`drivers` (required): array" in contract
+    assert "minimum 2 items/characters" in contract
+    assert '"properties"' not in contract
+    assert not contract.lstrip().startswith("{")
+```
+
+---
+
+## 7. Complete source — frontend
+
+### 7.1 `frontend/.env.example`
+
+```dotenv
+VITE_API_BASE_URL=http://localhost:8000
+```
+
+### 7.2 `frontend/vite.config.js`
+
+```js
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import { fileURLToPath } from 'node:url'
+
+export default defineConfig({
+  root: fileURLToPath(new URL('.', import.meta.url)),
+  plugins: [react()],
+  build: { outDir: '../dist', emptyOutDir: true },
+  server: { port: 5173 },
+  test: { environment: 'jsdom', setupFiles: './src/test-setup.js' },
+})
+```
+
+### 7.3 `frontend/index.html`
+
+```html
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Evidence-led agile story point estimation" />
+    <title>Story Pointer</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+```
+
+### 7.4 `frontend/src/main.jsx`
+
+```jsx
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import App from './App'
+import './styles.css'
+
+createRoot(document.getElementById('root')).render(<StrictMode><App /></StrictMode>)
+```
+
+### 7.5 `frontend/src/test-setup.js`
+
+```js
+import '@testing-library/jest-dom/vitest'
+```
+
+### 7.6 `frontend/src/api/client.js`
+
+```js
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, '')
+
+async function jsonRequest(path, options = {}) {
+  const response = await fetch(`${API_BASE}${path}`, options)
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    const detail = body.error || body.detail || body
+    const error = new Error(detail.message || `Request failed (${response.status})`)
+    error.payload = detail
+    throw error
+  }
+  return body
+}
+
+export async function consumeSSE(path, payload, onEvent, signal) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify(payload),
+    signal,
+  })
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    const detail = body.error || body.detail || body
+    const error = new Error(detail.message || `Request failed (${response.status})`)
+    error.payload = detail
+    throw error
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { value, done } = await reader.read()
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+    const blocks = buffer.split(/\r?\n\r?\n/)
+    buffer = blocks.pop() || ''
+    for (const block of blocks) {
+      let event = 'message'
+      const data = []
+      for (const line of block.split(/\r?\n/)) {
+        if (line.startsWith('event:')) event = line.slice(6).trim()
+        if (line.startsWith('data:')) data.push(line.slice(5).trim())
+      }
+      if (data.length) onEvent(event, JSON.parse(data.join('\n')))
+    }
+    if (done) break
+  }
+}
+
+export const api = {
+  config: () => jsonRequest('/config'),
+  health: () => jsonRequest('/health'),
+  jiraInstances: () => jsonRequest('/jira/instances'),
+  jiraIssues: (instance, project, filters = {}) => {
+    const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => value))
+    return jsonRequest(`/jira/${encodeURIComponent(instance)}/project/${encodeURIComponent(project)}/issues?${query}`)
+  },
+  parseUpload: async (file) => {
+    const form = new FormData()
+    form.append('file', file)
+    return jsonRequest('/upload/parse', { method: 'POST', body: form })
+  },
+  estimate: (story, onEvent, signal, sessionId, refinement) =>
+    consumeSSE('/estimate', { story, session_id: sessionId, refinement }, onEvent, signal),
+  estimateBatch: (stories, onEvent, signal) =>
+    consumeSSE('/estimate/batch', { stories }, onEvent, signal),
+  estimateUpload: (rows, mapping, onEvent, signal) =>
+    consumeSSE('/upload/estimate', { rows, mapping }, onEvent, signal),
+  writePoints: (instance, key, points) =>
+    jsonRequest(`/jira/${encodeURIComponent(instance)}/${encodeURIComponent(key)}/points`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ points, confirm: true }),
+    }),
+  templateUrl: `${API_BASE}/upload/template`,
+}
+```
+
+### 7.7 `frontend/src/App.jsx`
+
+```jsx
+import { BrainCircuit, ChevronRight, CircleHelp, Server } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { api } from './api/client'
+import BatchTable from './components/BatchTable'
+import ColumnMapper from './components/ColumnMapper'
+import ErrorCard from './components/ErrorCard'
+import ExcelUpload from './components/ExcelUpload'
+import JiraBrowser from './components/JiraBrowser'
+import PipelineView from './components/PipelineView'
+import ResultCard from './components/ResultCard'
+import SourceSwitcher from './components/SourceSwitcher'
+import StatusBadge from './components/StatusBadge'
+import StoryForm from './components/StoryForm'
+
+export default function App() {
+  const [source, setSource] = useState('manual')
+  const [config, setConfig] = useState(null)
+  const [health, setHealth] = useState(null)
+  const [issues, setIssues] = useState([])
+  const [upload, setUpload] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [steps, setSteps] = useState([])
+  const [pipelineTitle, setPipelineTitle] = useState('')
+  const [result, setResult] = useState(null)
+  const [results, setResults] = useState([])
+  const [error, setError] = useState(null)
+  const controller = useRef(null)
+
+  useEffect(() => {
+    Promise.all([api.config(), api.health()]).then(([nextConfig, nextHealth]) => { setConfig(nextConfig); setHealth(nextHealth) }).catch(setError)
+    return () => controller.current?.abort()
+  }, [])
+
+  const begin = () => { setLoading(true); setError(null); setResult(null); setResults([]); setSteps([]); controller.current = new AbortController() }
+  const end = () => setLoading(false)
+  const onSingleEvent = (event, data) => {
+    if (event === 'started') setPipelineTitle(data.title)
+    if (event === 'node') setSteps((current) => [...current, data.node])
+    if (event === 'result') setResult(data)
+    if (event === 'error') setError(new Error(data.message))
+  }
+  const estimateOne = async (story) => { begin(); try { await api.estimate(story, onSingleEvent, controller.current.signal) } catch (err) { setError(err) } finally { end() } }
+  const onBatchEvent = (event, data) => {
+    if (event === 'item_started') { setPipelineTitle(data.title); setSteps([]) }
+    if (event === 'item_node') setSteps((current) => [...current, data.node])
+    if (event === 'item_result') setResults((current) => [...current, data.result])
+    if (event === 'item_error' || event === 'error') setError(new Error(data.message))
+  }
+  const estimateBatch = async (stories) => { begin(); try { await api.estimateBatch(stories, onBatchEvent, controller.current.signal) } catch (err) { setError(err) } finally { end() } }
+  const fetchJira = async (instance, project, filters) => { setError(null); setLoading(true); try { setIssues(await api.jiraIssues(instance, project, filters)) } catch (err) { setError(err) } finally { end() } }
+  const parseFile = async (file) => { setError(null); setLoading(true); try { setUpload(await api.parseUpload(file)) } catch (err) { setError(err) } finally { end() } }
+  const estimateUpload = async (rows, mapping) => { begin(); try { await api.estimateUpload(rows, mapping, onBatchEvent, controller.current.signal) } catch (err) { setError(err) } finally { end() } }
+  const writePoints = async (item) => { if (!window.confirm(`Write ${item.points} points to ${item.story.key}? This changes Jira.`)) return; try { await api.writePoints(item.story.jira_instance, item.story.key, item.points); window.alert('Jira was updated.') } catch (err) { setError(err) } }
+
+  const jiraStatuses = health?.jira ? Object.entries(health.jira) : []
+  const configurationError = health?.llm?.errors?.length
+    ? new Error(`Backend configuration: ${health.llm.errors.join('; ')}`)
+    : null
+  return <div className="app-shell">
+    <header className="topbar"><a className="brand" href="#top" aria-label="Story Pointer home"><span><BrainCircuit size={23} /></span><div><strong>Story Pointer</strong><small>Evidence-led estimation</small></div></a><div className="system-status"><div className="model-badge"><Server size={15} /><span>{config ? (config.llm.provider ? `${config.llm.provider} · ${config.llm.model}` : 'LLM not configured') : 'Checking model...'}</span></div>{jiraStatuses.map(([name, value]) => <StatusBadge key={name} status={value.status}>{name}</StatusBadge>)}</div></header>
+    <main id="top"><section className="hero"><div><span className="eyebrow">Defensible by design</span><h1>A point is only useful when<br />everyone understands <em>why.</em></h1><p>Score the real work, calibrate it against your team’s anchors, and share a conclusion a product owner can grasp in five seconds.</p></div><div className="method-card"><CircleHelp size={20} /><div><strong>How it works</strong><ol><li>Score 12 delivery factors</li><li>Find the true drivers</li><li>Compare fixed anchors</li><li>Conclude, never guess</li></ol></div></div></section>
+      <SourceSwitcher value={source} onChange={(value) => { setSource(value); setError(null) }} />
+      <ErrorCard error={error || configurationError} />
+      <div className="workspace">
+        <div>{source === 'manual' && <StoryForm onSubmit={estimateOne} disabled={loading} />}{source === 'jira' && <JiraBrowser instances={config?.jira_instances || []} issues={issues} onFetch={fetchJira} onEstimate={estimateBatch} loading={loading} />}{source === 'upload' && (upload ? <ColumnMapper upload={upload} onEstimate={estimateUpload} loading={loading} /> : <ExcelUpload onUpload={parseFile} templateUrl={api.templateUrl} loading={loading} />)}</div>
+        <PipelineView steps={steps} active={loading} title={pipelineTitle} />
+      </div>
+      {results.length > 0 && <BatchTable results={results} onSelect={setResult} />}
+      {result && <ResultCard result={result} writeEnabled={config?.jira_write_enabled} onWrite={writePoints} />}
+      {!loading && !result && !results.length && <div className="empty-hint"><span>1</span> Add the story <ChevronRight /><span>2</span> Watch the reasoning build <ChevronRight /><span>3</span> Share the justified estimate</div>}
+    </main>
+    <footer><span>Story Pointer · Reasoning before numbers</span><span>Active model: {config?.llm?.provider || '—'} / {config?.llm?.model || '—'}</span></footer>
+  </div>
+}
+```
+
+### 7.8 `frontend/src/components/StoryForm.jsx`
+
+```jsx
+import { Plus, Trash2 } from 'lucide-react'
+import { useState } from 'react'
+
+const empty = { title: '', user_story: '', acceptance_criteria: [''], technical_breakdown: '', source: 'manual' }
+
+export default function StoryForm({ onSubmit, disabled }) {
+  const [story, setStory] = useState(empty)
+  const set = (field, value) => setStory((current) => ({ ...current, [field]: value }))
+  const setCriterion = (index, value) => set('acceptance_criteria', story.acceptance_criteria.map((item, i) => i === index ? value : item))
+  const submit = (event) => {
+    event.preventDefault()
+    onSubmit({ ...story, acceptance_criteria: story.acceptance_criteria.filter((item) => item.trim()) })
+  }
+  return (
+    <form className="input-card" onSubmit={submit}>
+      <div className="section-heading"><div><span className="eyebrow">One story</span><h2>Describe the work</h2></div></div>
+      <label>Title<input required value={story.title} onChange={(event) => set('title', event.target.value)} placeholder="What outcome are we delivering?" /></label>
+      <label>User story<textarea required rows="3" value={story.user_story} onChange={(event) => set('user_story', event.target.value)} placeholder="As a..., I want..., so that..." /></label>
+      <fieldset>
+        <legend>Acceptance criteria</legend>
+        <div className="criteria-list">
+          {story.acceptance_criteria.map((criterion, index) => (
+            <div className="criterion" key={index}>
+              <span>{index + 1}</span>
+              <input value={criterion} onChange={(event) => setCriterion(index, event.target.value)} placeholder="Observable condition of success" />
+              <button type="button" className="icon-button" aria-label={`Remove criterion ${index + 1}`} disabled={story.acceptance_criteria.length === 1} onClick={() => set('acceptance_criteria', story.acceptance_criteria.filter((_, i) => i !== index))}><Trash2 size={16} /></button>
+            </div>
+          ))}
+        </div>
+        <button type="button" className="text-button" onClick={() => set('acceptance_criteria', [...story.acceptance_criteria, ''])}><Plus size={16} /> Add criterion</button>
+      </fieldset>
+      <label>Technical breakdown <span className="optional">Optional</span><textarea rows="2" value={story.technical_breakdown} onChange={(event) => set('technical_breakdown', event.target.value)} placeholder="Known services, components, migrations, or constraints" /></label>
+      <button className="button primary" disabled={disabled}>Build justified estimate</button>
+    </form>
+  )
+}
+```
+
+### 7.9 `frontend/src/components/JiraBrowser.jsx`
+
+```jsx
+import { Download, Search } from 'lucide-react'
+import { useState } from 'react'
+
+export default function JiraBrowser({ instances, issues, onFetch, onEstimate, loading }) {
+  const [instance, setInstance] = useState('')
+  const [project, setProject] = useState('')
+  const [status, setStatus] = useState('')
+  const [sprint, setSprint] = useState('')
+  const [selected, setSelected] = useState(new Set())
+  const activeInstance = instance || instances[0]?.name || ''
+  const toggle = (index) => setSelected((current) => {
+    const next = new Set(current)
+    next.has(index) ? next.delete(index) : next.add(index)
+    return next
+  })
+  const selectedStories = issues.filter((_, index) => selected.has(index))
+  return (
+    <section className="input-card">
+      <div className="section-heading"><div><span className="eyebrow">Connected work</span><h2>Browse a Jira project</h2></div></div>
+      <div className="form-grid jira-controls">
+        <label>Instance<select value={activeInstance} onChange={(event) => setInstance(event.target.value)}>{instances.map((item) => <option key={item.name} value={item.name}>{item.name} ({item.auth_type})</option>)}</select></label>
+        <label>Project code<input value={project} onChange={(event) => setProject(event.target.value.toUpperCase())} placeholder="PAY" /></label>
+        <label>Status <span className="optional">Optional</span><input value={status} onChange={(event) => setStatus(event.target.value)} placeholder="Ready for refinement" /></label>
+        <label>Sprint <span className="optional">Optional</span><input value={sprint} onChange={(event) => setSprint(event.target.value)} placeholder="Sprint 24" /></label>
+      </div>
+      <button className="button secondary" disabled={!activeInstance || !project || loading} onClick={() => onFetch(activeInstance, project, { status, sprint })}><Search size={17} /> Fetch issues</button>
+      {issues.length > 0 && <>
+        <div className="table-wrap"><table className="select-table"><thead><tr><th><span className="sr-only">Select</span></th><th>Key</th><th>Summary</th><th>Status</th><th>Existing</th></tr></thead>
+          <tbody>{issues.map((issue, index) => <tr key={issue.key || index}><td><input type="checkbox" aria-label={`Select ${issue.title}`} checked={selected.has(index)} onChange={() => toggle(index)} /></td><td className="mono">{issue.key}</td><td>{issue.title}</td><td>{issue.status || 'Unknown'}</td><td>{issue.existing_points ?? '—'}</td></tr>)}</tbody></table></div>
+        <button className="button primary" disabled={!selected.size || loading} onClick={() => onEstimate(selectedStories)}><Download size={17} /> Estimate selected ({selected.size})</button>
+      </>}
+    </section>
+  )
+}
+```
+
+### 7.10 `frontend/src/components/ExcelUpload.jsx`
+
+```jsx
+import { Download, FileSpreadsheet, UploadCloud } from 'lucide-react'
+import { useRef, useState } from 'react'
+
+export default function ExcelUpload({ onUpload, templateUrl, loading }) {
+  const input = useRef(null)
+  const [dragging, setDragging] = useState(false)
+  const pick = (files) => files?.[0] && onUpload(files[0])
+  return (
+    <section className="input-card">
+      <div className="section-heading"><div><span className="eyebrow">Many stories</span><h2>Import a spreadsheet</h2></div><a className="text-button" href={templateUrl}><Download size={16} /> Template</a></div>
+      <div className={`drop-zone ${dragging ? 'dragging' : ''}`} role="button" tabIndex="0" onKeyDown={(event) => (event.key === 'Enter' || event.key === ' ') && input.current?.click()} onClick={() => input.current?.click()} onDragOver={(event) => { event.preventDefault(); setDragging(true) }} onDragLeave={() => setDragging(false)} onDrop={(event) => { event.preventDefault(); setDragging(false); pick(event.dataTransfer.files) }}>
+        <UploadCloud size={32} aria-hidden="true" /><strong>Drop Excel or CSV here</strong><span>or choose a file up to 15 MB</span>
+        <input ref={input} hidden type="file" accept=".csv,.xlsx,.xls" disabled={loading} onChange={(event) => pick(event.target.files)} />
+      </div>
+      <p className="help"><FileSpreadsheet size={15} /> Headers can be anything. You will map them on the next screen.</p>
+    </section>
+  )
+}
+```
+
+### 7.11 `frontend/src/components/ColumnMapper.jsx`
+
+```jsx
+import { ArrowRight, CheckCircle2 } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+
+const fields = [
+  ['title', 'Title', true], ['user_story', 'User story', false], ['acceptance_criteria', 'Acceptance criteria', false],
+  ['technical_breakdown', 'Technical breakdown', false], ['existing_points', 'Existing points', false],
+]
+
+export default function ColumnMapper({ upload, onEstimate, loading }) {
+  const [mapping, setMapping] = useState(upload.suggested_mapping)
+  const selectableRows = upload.rows.slice(0, 100)
+  const [selected, setSelected] = useState(() => new Set(selectableRows.map((_, index) => index)))
+  useEffect(() => { setMapping(upload.suggested_mapping); setSelected(new Set(upload.rows.slice(0, 100).map((_, index) => index))) }, [upload])
+  const previewColumns = useMemo(() => Object.values(mapping).filter(Boolean), [mapping])
+  const toggle = (index) => setSelected((current) => { const next = new Set(current); next.has(index) ? next.delete(index) : next.add(index); return next })
+  const selectedRows = selectableRows.filter((_, index) => selected.has(index))
+  return (
+    <section className="input-card mapping-card">
+      <div className="section-heading"><div><span className="eyebrow">{upload.row_count} rows detected</span><h2>Match your columns</h2></div><CheckCircle2 className="success-icon" /></div>
+      <div className="mapping-grid">
+        {fields.map(([key, label, required]) => <div className="mapping-row" key={key}><span>{label}{required && <b> Required</b>}</span><ArrowRight size={16} /><select value={mapping[key] || ''} onChange={(event) => setMapping((current) => ({ ...current, [key]: event.target.value || null }))}><option value="">Not mapped</option>{upload.columns.map((column) => <option key={column} value={column}>{column}</option>)}</select></div>)}
+      </div>
+      <div className="preview-toolbar"><span>Select stories to estimate (maximum 100)</span><button className="text-button" onClick={() => setSelected(selected.size ? new Set() : new Set(selectableRows.map((_, index) => index)))}>{selected.size ? 'Clear selection' : 'Select all'}</button></div>
+      <div className="table-wrap mapping-preview"><table className="preview-table"><thead><tr><th><span className="sr-only">Select</span></th>{previewColumns.map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{selectableRows.map((row, index) => <tr key={index}><td><input type="checkbox" aria-label={`Select row ${index + 2}`} checked={selected.has(index)} onChange={() => toggle(index)} /></td>{previewColumns.map((column) => <td key={column}>{String(row[column] ?? '').slice(0, 100)}</td>)}</tr>)}</tbody></table></div>
+      {upload.row_count > 100 && <p className="help">Showing the first 100 rows. Split larger files into batches of 100 for reliable progress.</p>}
+      <button className="button primary" disabled={!mapping.title || !selected.size || loading} onClick={() => onEstimate(selectedRows, mapping)}>Estimate selected ({selected.size})</button>
+    </section>
+  )
+}
+```
+
+### 7.12 `frontend/src/components/PipelineView.jsx`
+
+```jsx
+import { Check, Circle, LoaderCircle } from 'lucide-react'
+
+const labels = {
+  score_parameters: 'Score parameters', identify_drivers: 'Identify drivers', compare_to_anchors: 'Compare anchors',
+  derive_points: 'Derive points', spike_split_branch: 'Spike / split check', write_plain_language_reasoning: 'Write plain-language why',
+  detect_hidden_tasks: 'Find hidden work', assess_risks: 'Assess risks', recommend_split: 'Recommend split',
+}
+
+export default function PipelineView({ steps, active = true, title }) {
+  if (!active && !steps.length) return null
+  return (
+    <section className="pipeline-card" aria-live="polite">
+      <div><span className="eyebrow">Live reasoning</span><h2>{title || 'Building the estimate'}</h2></div>
+      <div className="pipeline-steps">
+        {Object.entries(labels).map(([key, label]) => {
+          const done = steps.includes(key)
+          const current = !done && Object.keys(labels)[steps.length] === key
+          return <div className={`pipeline-step ${done ? 'done' : current ? 'current' : ''}`} key={key}>{done ? <Check size={15} /> : current ? <LoaderCircle size={15} className="spin" /> : <Circle size={12} />}<span>{label}</span></div>
+        })}
+      </div>
+    </section>
+  )
+}
+```
+
+### 7.13 `frontend/src/components/ResultCard.jsx`
+
+```jsx
+import { AlertTriangle, Anchor, Braces, ChevronDown, Download, GitFork, ShieldAlert, Target } from 'lucide-react'
+import Scorecard from './Scorecard'
+import EffortBar from './EffortBar'
+
+const fibonacci = [1, 2, 3, 5, 8, 13]
+
+function Detail({ title, icon: Icon, children, open = false }) {
+  return <details className="result-detail" open={open}><summary><span><Icon size={18} />{title}</span><ChevronDown size={18} /></summary><div className="detail-body">{children}</div></details>
+}
+
+function download(name, content, type) {
+  const url = URL.createObjectURL(new Blob([content], { type }))
+  const anchor = document.createElement('a')
+  anchor.href = url; anchor.download = name; anchor.click(); URL.revokeObjectURL(url)
+}
+
+function markdown(result) {
+  return `# ${result.story.title}\n\n## ${result.points} points\n\n**${result.tldr}**\n\n${result.plain_language_why}\n\n## Anchor comparison\n${result.anchor_comparison}\n\n## Risks\n${result.risks.map((item) => `- ${item.risk}: ${item.mitigation_or_assumption}`).join('\n')}\n`
+}
+
+export default function ResultCard({ result, writeEnabled, onWrite }) {
+  if (!result?.plain_language_why || !result?.tldr) return <div className="error-card">An estimate was withheld because its required explanation is missing.</div>
+  const story = result.story || {}
+  const split = result.split_recommendation || {}
+  return (
+    <article className="result-card">
+      {(split.split_recommended || result.spike_recommended) && <div className="recommend-banner"><AlertTriangle size={18} /><strong>{split.split_recommended ? 'SPLIT' : 'SPIKE'} recommended</strong><span>{split.split_recommended ? split.rationale : result.spike_reason}</span></div>}
+      <header className="result-headline">
+        <div className="points-block"><span>Story points</span><strong>{result.points}</strong>{story.existing_points != null && <small>was {story.existing_points} <b>{result.points - story.existing_points > 0 ? '+' : ''}{result.points - story.existing_points}</b></small>}</div>
+        <div className="headline-copy"><span className="eyebrow">{story.key ? `${story.key} · ` : ''}{story.title}</span><h2>{result.tldr}</h2><p>{result.plain_language_why}</p></div>
+      </header>
+      <div className="fib-scale" aria-label={`Fibonacci scale, ${result.points} selected`}>{fibonacci.map((point) => <span className={point === result.points ? 'selected' : point < result.points ? 'passed' : ''} key={point}>{point}</span>)}</div>
+      <div className="result-actions"><button className="text-button" onClick={() => download(`${story.key || 'estimate'}.md`, markdown(result), 'text/markdown')}><Download size={15} /> Markdown</button><button className="text-button" onClick={() => download(`${story.key || 'estimate'}.json`, JSON.stringify(result, null, 2), 'application/json')}><Braces size={15} /> JSON</button>{writeEnabled && story.source === 'jira' && <button className="button secondary small" onClick={() => onWrite(result)}>Write {result.points} to Jira</button>}</div>
+      <div className="details-stack">
+        <Detail title="Scorecard and drivers" icon={Target}><p className="callout"><strong>What drives this:</strong> {result.drivers_explanation}</p><Scorecard scores={result.scorecard} drivers={result.drivers} /></Detail>
+        <Detail title="Calibration anchor comparison" icon={Anchor}><p>{result.anchor_comparison}</p><p className="muted">Point derivation: {result.points_derivation}</p></Detail>
+        <Detail title="Layer effort and range" icon={Target}><EffortBar effort={result.effort} /></Detail>
+        <Detail title={`Hidden sub-tasks (${result.hidden_tasks?.length || 0})`} icon={ShieldAlert}>{result.hidden_tasks?.length ? <ul className="reason-list">{result.hidden_tasks.map((item, index) => <li key={index}><strong>{item.task}</strong><span>{item.weight}</span></li>)}</ul> : <p>No hidden work was evidenced in the criteria.</p>}</Detail>
+        <Detail title="Risks and assumptions" icon={AlertTriangle}><ul className="reason-list">{result.risks?.map((item, index) => <li key={index}><strong>{item.risk}</strong><span>{item.mitigation_or_assumption}</span></li>)}</ul><h4>Assumptions</h4><ul>{result.assumptions?.map((item, index) => <li key={index}>{item}</li>)}</ul></Detail>
+        <Detail title="Split recommendation" icon={GitFork}><p>{split.rationale}</p>{split.proposed_stories?.length > 0 && <ol>{split.proposed_stories.map((item, index) => <li key={index}>{item}</li>)}</ol>}</Detail>
+      </div>
+    </article>
+  )
+}
+```
+
+### 7.14 `frontend/src/components/ResultCard.test.jsx`
+
+```jsx
+import { render, screen } from '@testing-library/react'
+import { describe, expect, it } from 'vitest'
+import ResultCard from './ResultCard'
+
+const complete = {
+  points: 5,
+  tldr: '5 - bounded cross-stack work using known patterns.',
+  plain_language_why: 'This is a 5 because it changes the form and its existing service. It is similar to our preference anchor.',
+  story: { title: 'Preference', source: 'manual' },
+  scorecard: [], drivers: [], drivers_explanation: '', anchor_comparison: 'Similar to the preference anchor.',
+  points_derivation: 'Bounded, known cross-stack work.', effort: null, hidden_tasks: [], risks: [], assumptions: [],
+  split_recommendation: { split_recommended: false, rationale: 'Keep together.', proposed_stories: [] },
+}
+
+describe('ResultCard', () => {
+  it('withholds a number when its explanation is absent', () => {
+    render(<ResultCard result={{ ...complete, plain_language_why: '' }} />)
+    expect(screen.queryByText('5')).not.toBeInTheDocument()
+    expect(screen.getByText(/withheld/)).toBeInTheDocument()
+  })
+
+  it('renders points with the headline reason', () => {
+    render(<ResultCard result={complete} />)
+    expect(screen.getByText('5', { selector: '.points-block > strong' })).toBeInTheDocument()
+    expect(screen.getByText(complete.tldr)).toBeInTheDocument()
+  })
+})
+```
+
+### 7.15 `frontend/src/components/Scorecard.jsx`
+
+```jsx
+const display = (value) => value.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
+
+export default function Scorecard({ scores = [], drivers = [] }) {
+  return <div className="table-wrap"><table className="scorecard"><thead><tr><th>Parameter</th><th>Score</th><th>Why</th></tr></thead><tbody>{scores.map((item) => <tr key={item.parameter}><td>{display(item.parameter)}{drivers.includes(item.parameter) && <span className="driver-badge">Driver</span>}</td><td><span className={`score-chip ${item.score.toLowerCase()}`}>{item.score}</span></td><td>{item.reason}</td></tr>)}</tbody></table></div>
+}
+```
+
+### 7.16 `frontend/src/components/EffortBar.jsx`
+
+```jsx
+export default function EffortBar({ effort }) {
+  if (!effort) return null
+  const days = effort.person_days
+  const max = Math.max(days.pessimistic, 1)
+  return <div className="effort"><div className="layer-grid"><div><span>React</span><p>{effort.react}</p></div><div><span>Spring</span><p>{effort.spring}</p></div><div><span>Existing code</span><p>{effort.existing_code}</p></div></div><div className="effort-scale"><div className="effort-track"><span style={{ width: `${(days.optimistic / max) * 100}%` }} /><i style={{ left: `${(days.likely / max) * 100}%` }} /></div><div className="effort-labels"><span>{days.optimistic}d optimistic</span><strong>{days.likely}d likely</strong><span>{days.pessimistic}d pessimistic</span></div></div></div>
+}
+```
+
+### 7.17 `frontend/src/components/BatchTable.jsx`
+
+```jsx
+import { ArrowDownUp, Download } from 'lucide-react'
+import { useMemo, useState } from 'react'
+
+export default function BatchTable({ results, onSelect }) {
+  const [sort, setSort] = useState('title')
+  const sorted = useMemo(() => [...results].sort((a, b) => sort === 'points' ? a.points - b.points : (a.story?.title || '').localeCompare(b.story?.title || '')), [results, sort])
+  const exportCsv = () => {
+    const rows = [['Item', 'Points', 'Why', 'Split'], ...sorted.map((result) => [result.story.title, result.points, result.tldr, result.split_recommendation?.split_recommended ? 'Yes' : 'No'])]
+    const csv = rows.map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(',')).join('\n')
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+    const link = document.createElement('a'); link.href = url; link.download = 'story-estimates.csv'; link.click(); URL.revokeObjectURL(url)
+  }
+  return <section className="batch-card"><div className="section-heading"><div><span className="eyebrow">Batch complete</span><h2>{results.length} justified estimates</h2></div><div className="result-actions"><button className="text-button" onClick={() => setSort(sort === 'points' ? 'title' : 'points')}><ArrowDownUp size={15} /> Sort by {sort === 'points' ? 'title' : 'points'}</button><button className="text-button" onClick={exportCsv}><Download size={15} /> Export all</button></div></div><div className="table-wrap"><table className="batch-table"><thead><tr><th>Item</th><th>Estimate and reason</th><th>Action</th></tr></thead><tbody>{sorted.map((result, index) => <tr key={result.story.key || index}><td><strong>{result.story.key || result.story.title}</strong><span>{result.story.key && result.story.title}</span></td><td><div className="batch-estimate"><b>{result.points}</b><span>{result.tldr}</span>{result.split_recommendation?.split_recommended && <i>SPLIT</i>}</div></td><td><button className="text-button" onClick={() => onSelect(result)}>Open reasoning</button></td></tr>)}</tbody></table></div></section>
+}
+```
+
+### 7.18 `frontend/src/components/SourceSwitcher.jsx`
+
+```jsx
+import { FileSpreadsheet, Keyboard, PanelsTopLeft } from 'lucide-react'
+
+const options = [
+  { id: 'jira', label: 'From Jira', Icon: PanelsTopLeft },
+  { id: 'manual', label: 'Manual entry', Icon: Keyboard },
+  { id: 'upload', label: 'Upload Excel / CSV', Icon: FileSpreadsheet },
+]
+
+export default function SourceSwitcher({ value, onChange }) {
+  return (
+    <div className="source-switcher" role="tablist" aria-label="Story source">
+      {options.map(({ id, label, Icon }) => (
+        <button key={id} role="tab" aria-selected={value === id} className={value === id ? 'active' : ''} onClick={() => onChange(id)}>
+          <Icon size={18} aria-hidden="true" />{label}
+        </button>
+      ))}
+    </div>
+  )
+}
+```
+
+### 7.19 `frontend/src/components/StatusBadge.jsx`
+
+```jsx
+export default function StatusBadge({ status = 'unknown', children }) {
+  const tone = ['ok', 'configured', 'completed'].includes(status) ? 'good' : status === 'running' ? 'busy' : 'bad'
+  return <span className={`status-badge ${tone}`}><span aria-hidden="true" />{children || status}</span>
+}
+```
+
+### 7.20 `frontend/src/components/ErrorCard.jsx`
+
+```jsx
+import { AlertCircle, RotateCcw } from 'lucide-react'
+
+export default function ErrorCard({ error, onRetry }) {
+  if (!error) return null
+  return (
+    <div className="error-card" role="alert">
+      <AlertCircle size={20} aria-hidden="true" />
+      <div><strong>Something needs attention</strong><p>{error.message || String(error)}</p></div>
+      {onRetry && <button className="button secondary small" onClick={onRetry}><RotateCcw size={15} /> Retry</button>}
+    </div>
+  )
+}
+```
+
+### 7.21 `frontend/src/styles.css`
+
+```css
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap');
+
+:root { font-family: 'DM Sans', sans-serif; color: #17221e; background: #f3f5ef; font-synthesis: none; --ink:#17221e; --muted:#68736e; --line:#dfe4dc; --paper:#fff; --green:#186149; --lime:#d8efb4; --amber:#e5a938; --red:#bd4b3d; }
+* { box-sizing: border-box; }
+body { margin:0; min-width:320px; min-height:100vh; }
+button,input,textarea,select { font:inherit; }
+button,a { -webkit-tap-highlight-color:transparent; }
+button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,[tabindex]:focus-visible { outline:3px solid #8ac5ad; outline-offset:2px; }
+.app-shell { min-height:100vh; }
+.topbar { height:76px; padding:0 max(28px,calc((100vw - 1240px)/2)); background:#123d31; color:#fff; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid #315c50; }
+.brand { color:inherit; text-decoration:none; display:flex; align-items:center; gap:11px; }
+.brand>span { width:41px;height:41px;display:grid;place-items:center;background:#d8efb4;color:#174b3a;border-radius:12px; }
+.brand div { display:flex; flex-direction:column; }
+.brand strong { font:700 17px 'Manrope'; letter-spacing:-.02em; }
+.brand small { color:#b7cdc4; font-size:11px; }
+.system-status { display:flex; gap:10px; align-items:center; }
+.model-badge,.status-badge { border:1px solid #487166; border-radius:999px; display:inline-flex; align-items:center; gap:7px; padding:7px 10px; color:#dbe8e3; font-size:12px; }
+.status-badge>span { width:7px;height:7px;border-radius:50%;background:#d6a740; }.status-badge.good>span{background:#9bd27a}.status-badge.bad>span{background:#ef796b}.status-badge.busy>span{background:#e5a938}
+main { max-width:1240px; margin:auto; padding:64px 28px 90px; }
+.hero { display:grid; grid-template-columns:1fr 320px; gap:60px; align-items:end; margin-bottom:46px; }
+.eyebrow { display:block; color:#4f655d; font-size:11px; font-weight:800; letter-spacing:.13em; text-transform:uppercase; margin-bottom:9px; }
+h1,h2,h3 { font-family:'Manrope'; margin:0; letter-spacing:-.035em; }
+h1 { font-size:clamp(37px,5vw,61px); line-height:1.06; max-width:790px; } h1 em{color:#27795e;font-style:normal}
+.hero>div>p { color:var(--muted); font-size:17px; line-height:1.65; max-width:680px; margin:20px 0 0; }
+.method-card { padding:22px; background:#e7eddf; border:1px solid #d6ddce; display:flex; align-items:flex-start; gap:13px; border-radius:15px; }
+.method-card svg { color:#27795e; flex:none; }.method-card strong{font-family:'Manrope'}.method-card ol{margin:12px 0 0;padding-left:20px;color:#53615b;font-size:13px;line-height:1.8}
+.source-switcher { background:#e2e7de; border-radius:13px; padding:5px; display:grid; grid-template-columns:repeat(3,1fr); margin-bottom:24px; }
+.source-switcher button { border:0;background:transparent;padding:13px 17px;border-radius:9px;color:#65706a;font-weight:650;display:flex;align-items:center;justify-content:center;gap:8px;cursor:pointer; }
+.source-switcher button.active { background:#fff;color:#174d3d;box-shadow:0 2px 10px #2d3e3510; }
+.workspace { display:grid; grid-template-columns:minmax(0,1fr) 330px; gap:24px; align-items:start; }
+.input-card,.pipeline-card,.result-card,.batch-card { background:var(--paper);border:1px solid var(--line);border-radius:17px;box-shadow:0 9px 30px rgba(30,50,40,.05); }
+.input-card { padding:29px; }.pipeline-card{padding:25px;position:sticky;top:20px}.batch-card{padding:29px;margin-top:24px}.result-card{margin-top:24px;overflow:hidden}
+.section-heading { display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px }.section-heading h2,.pipeline-card h2{font-size:22px}.section-heading .eyebrow{margin-bottom:5px}
+label,legend { display:block;font-size:13px;font-weight:700;color:#3d4b45;margin-bottom:18px } fieldset{border:0;padding:0;margin:0}legend{margin-bottom:10px}
+input,textarea,select { width:100%;margin-top:7px;border:1px solid #ced6ce;border-radius:9px;padding:11px 12px;background:#fbfcfa;color:var(--ink);transition:.2s border-color; }
+textarea { resize:vertical;line-height:1.5 } input:hover,textarea:hover,select:hover{border-color:#9eada4}.optional{font-weight:400;color:#89938e;margin-left:3px}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 15px}.criteria-list{display:flex;flex-direction:column;gap:8px;margin-bottom:8px}.criterion{display:grid;grid-template-columns:25px 1fr 34px;align-items:center;gap:7px}.criterion>span{width:25px;height:25px;border-radius:50%;background:#e4eee6;color:#27634f;display:grid;place-items:center;font-size:12px;font-weight:800}.criterion input{margin:0}.icon-button{border:0;background:transparent;color:#748078;display:grid;place-items:center;cursor:pointer}.icon-button:disabled{opacity:.3}
+.button,.text-button { border:0;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:7px;font-weight:700 }.button{padding:11px 16px;border-radius:9px}.button.primary{background:#17624a;color:#fff}.button.primary:hover{background:#104b39}.button.secondary{background:#edf2ec;color:#205542;border:1px solid #dce5de}.button.small{padding:8px 11px;font-size:12px}.button:disabled{opacity:.48;cursor:not-allowed}.text-button{padding:6px;background:transparent;color:#287057;text-decoration:none;font-size:13px}.success-icon{color:#398563}
+.drop-zone{border:1.5px dashed #9db1a4;border-radius:13px;min-height:230px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;color:#65736d;cursor:pointer;background:#fafbf9}.drop-zone svg{color:#3a8067}.drop-zone strong{color:#31423b}.drop-zone.dragging{background:#edf6ee;border-color:#398563}.help{display:flex;align-items:center;gap:6px;color:#7b8681;font-size:12px}
+.mapping-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px 18px;margin-bottom:22px}.mapping-row{display:grid;grid-template-columns:1fr 16px 1fr;align-items:center;gap:7px;font-size:13px}.mapping-row>span{font-weight:650}.mapping-row b{font-size:9px;text-transform:uppercase;color:#a24b3e}.mapping-row select{margin:0}
+.preview-toolbar{display:flex;align-items:center;justify-content:space-between;color:#66736c;font-size:12px}.mapping-preview{max-height:360px;border:1px solid #e4e9e3;border-radius:9px;margin-bottom:14px}.mapping-preview thead{position:sticky;top:0;z-index:1}.mapping-preview input{width:auto;margin:0}
+.table-wrap{max-width:100%;overflow:auto}.select-table,.preview-table,.scorecard,.batch-table{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0 20px}.select-table th,.select-table td,.preview-table th,.preview-table td,.scorecard th,.scorecard td,.batch-table th,.batch-table td{border-bottom:1px solid #e8ece7;text-align:left;padding:11px 10px;vertical-align:top}.select-table th,.preview-table th,.scorecard th,.batch-table th{color:#758079;font-size:10px;text-transform:uppercase;letter-spacing:.08em;background:#fafbf9}.select-table input{width:auto;margin:0}.mono{font-family:monospace;color:#2a6752}
+.pipeline-steps{display:flex;flex-direction:column;margin-top:20px}.pipeline-step{display:flex;align-items:center;gap:10px;color:#a1aaa5;font-size:13px;position:relative;padding:8px 0}.pipeline-step:before{content:"";position:absolute;left:7px;top:-8px;height:16px;border-left:1px solid #dce2dd}.pipeline-step:first-child:before{display:none}.pipeline-step.done{color:#286c53}.pipeline-step.done svg{background:#d9eed9;border-radius:50%;padding:2px}.pipeline-step.current{color:#263c33;font-weight:700}.spin{animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+.error-card{border:1px solid #e4b3ac;background:#fff5f3;color:#77372f;border-radius:12px;padding:14px 16px;display:flex;align-items:flex-start;gap:10px;margin-bottom:18px}.error-card p{margin:4px 0 0;color:#97584f}.error-card .button{margin-left:auto}
+.recommend-banner{display:grid;grid-template-columns:20px auto 1fr;gap:8px 10px;align-items:center;padding:12px 24px;background:#fff2cf;color:#704e0f;border-bottom:1px solid #f1dda4;font-size:13px}.recommend-banner span{color:#866828}
+.result-headline{display:grid;grid-template-columns:190px 1fr;gap:35px;padding:35px 40px 28px;background:#153f34;color:#fff}.points-block{border-right:1px solid #3c6258;display:flex;flex-direction:column;justify-content:center}.points-block>span{text-transform:uppercase;letter-spacing:.11em;color:#b8ccc4;font-size:10px;font-weight:800}.points-block>strong{font:800 76px/.95 'Manrope';color:#d9efb8}.points-block small{margin-top:11px;color:#b8ccc4}.points-block small b{margin-left:5px;color:#efc36d}.headline-copy{display:flex;flex-direction:column;justify-content:center}.headline-copy .eyebrow{color:#a9c3ba}.headline-copy h2{font-size:23px;line-height:1.35}.headline-copy p{color:#d6e3de;line-height:1.65;margin:13px 0 0;max-width:780px}
+.fib-scale{display:flex;align-items:center;justify-content:center;gap:0;padding:18px 40px;background:#f7f9f5;border-bottom:1px solid var(--line)}.fib-scale span{width:46px;height:30px;border-top:3px solid #d5ddd5;text-align:center;padding-top:7px;color:#9aa39e;font-size:11px;font-weight:800}.fib-scale span.passed{border-color:#8bb9a5;color:#568572}.fib-scale span.selected{border-color:#1c6c50;color:#fff;background:#1c6c50;border-radius:0 0 7px 7px}
+.result-actions{display:flex;gap:8px;justify-content:flex-end;align-items:center;padding:10px 24px}.details-stack{border-top:1px solid var(--line)}.result-detail{border-bottom:1px solid var(--line)}.result-detail summary{list-style:none;display:flex;align-items:center;justify-content:space-between;padding:17px 29px;cursor:pointer;font-weight:700}.result-detail summary::-webkit-details-marker{display:none}.result-detail summary span{display:flex;align-items:center;gap:9px}.result-detail summary span svg{color:#32785f}.result-detail summary>svg{transition:transform .2s}.result-detail[open] summary>svg{transform:rotate(180deg)}.detail-body{padding:0 29px 25px;color:#48574f;line-height:1.6}.detail-body p{margin-top:0}.callout{padding:13px;background:#eef4eb;border-left:3px solid #5d957d;border-radius:5px}.muted{color:#748078}
+.score-chip{font-size:10px;font-weight:800;text-transform:uppercase;padding:4px 7px;border-radius:999px}.score-chip.low{color:#26674e;background:#dff0df}.score-chip.medium{color:#785514;background:#f9eabf}.score-chip.high{color:#933f34;background:#f8dcd7}.driver-badge{font-size:8px;text-transform:uppercase;letter-spacing:.06em;color:#286b52;background:#e0eee4;padding:3px 5px;border-radius:4px;margin-left:7px}.reason-list{list-style:none;padding:0}.reason-list li{display:flex;flex-direction:column;padding:9px 0;border-bottom:1px solid #edf0ec}.reason-list span{color:#6c7872;font-size:13px}
+.layer-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.layer-grid div{background:#f5f7f3;padding:13px;border-radius:8px}.layer-grid span{font-size:10px;text-transform:uppercase;font-weight:800;color:#507264}.layer-grid p{margin:5px 0 0;font-size:13px}.effort-scale{margin-top:24px}.effort-track{height:9px;background:#e5e9e3;border-radius:8px;position:relative}.effort-track span{display:block;height:100%;background:linear-gradient(90deg,#7db997,#e4bb58);border-radius:8px}.effort-track i{position:absolute;top:-5px;width:3px;height:19px;background:#263d33}.effort-labels{display:flex;justify-content:space-between;font-size:11px;color:#78827d;margin-top:8px}
+.batch-table td:first-child{display:flex;flex-direction:column;min-width:180px}.batch-table td:first-child span{font-size:12px;color:#758079}.batch-estimate{display:grid;grid-template-columns:36px 1fr auto;gap:10px;align-items:center;min-width:410px}.batch-estimate b{font:800 23px 'Manrope';color:#1c664d}.batch-estimate i{font-style:normal;font-size:9px;color:#795814;background:#f8e9bb;border-radius:4px;padding:3px 5px}
+.empty-hint{display:flex;align-items:center;justify-content:center;gap:10px;color:#7b8781;font-size:12px;margin-top:34px}.empty-hint span{width:24px;height:24px;display:grid;place-items:center;background:#dfe7de;color:#346b55;border-radius:50%;font-weight:800}.empty-hint svg{width:14px}
+footer{border-top:1px solid #d9ded7;max-width:1240px;margin:auto;padding:22px 28px 35px;color:#7c8681;font-size:11px;display:flex;justify-content:space-between}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media(max-width:900px){.system-status .status-badge{display:none}.hero{grid-template-columns:1fr}.method-card{display:none}.workspace{grid-template-columns:1fr}.pipeline-card{position:static}.result-headline{grid-template-columns:145px 1fr}.mapping-grid{grid-template-columns:1fr}}
+@media(max-width:620px){main{padding:42px 15px 70px}.topbar{padding:0 15px}.model-badge{max-width:180px;overflow:hidden;white-space:nowrap}.source-switcher button{font-size:0}.source-switcher button svg{width:21px;height:21px}.input-card,.batch-card{padding:20px}.form-grid,.layer-grid{grid-template-columns:1fr}.result-headline{grid-template-columns:1fr;padding:27px}.points-block{border-right:0;border-bottom:1px solid #3c6258;padding-bottom:20px}.points-block>strong{font-size:61px}.headline-copy h2{font-size:19px}.recommend-banner{grid-template-columns:20px 1fr}.recommend-banner span{grid-column:1/-1}.empty-hint{display:none}.result-actions{flex-wrap:wrap}footer{flex-direction:column;gap:5px}.jira-controls{grid-template-columns:1fr}}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;animation-duration:.01ms!important;transition-duration:.01ms!important}}
+```
+
+---
+
+## 8. Behavioral invariants checklist (verify after regeneration)
+
+1. **Explanation-before-number**: `/estimate` never emits `result` without
+   `plain_language_why` and `tldr`; `ResultCard` renders a refusal card without them.
+2. **All 12 parameters scored** or the node raises listing omissions.
+3. **13 ⇒ escalation branch ⇒ spike recommended ⇒ split forced**; High uncertainty
+   alone also triggers the spike branch.
+4. **Refinement**: same `session_id` + `refinement` continues the checkpointed thread.
+5. **Jira write-back is triple-gated**: env flag, `confirm=true` in the request body,
+   and a browser confirm dialog; the write button only appears for Jira-sourced
+   results when writes are enabled.
+6. **Startup never crashes on bad config**: `/health` and `/config` stay available;
+   estimate endpoints 503 with the error list.
+7. **Provider strings never leave the factory** (and Groq's json_mode special case
+   never leaves `get_structured_llm`).
+8. **Uploads**: 15 MB cap, Title mapping required, blank-title rows reported not
+   fatal, at most 100 stories per batch request, template downloads as
+   `story-pointer-template.xlsx`.
+9. **Error envelope** everywhere: `{"error": {code, message, details, retryable}}`.
+10. **SSE node events carry no content** — only node name + status; state internals
+    (`anchors`, `messages`, `escalation_required`, `refinement`) never reach the client.
+
+## 9. Setup, run, verify
+
+```powershell
+# from the repository root
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+Copy-Item backend\.env.example backend\.env    # then fill LLM_API_KEY etc.
+npm install
+Copy-Item frontend\.env.example frontend\.env
+
+# terminal 1 — API
+.\.venv\Scripts\Activate.ps1
+uvicorn backend.api.main:app --reload --port 8000
+
+# terminal 2 — UI
+npm run dev        # http://localhost:5173
+
+# checks
+pytest backend/tests -q     # 8 tests
+npm test                    # 2 vitest tests (ResultCard)
+npm run build               # outputs to ./dist
+```
+
+Smoke test without a UI: `GET http://localhost:8000/health` should return
+`status: ok` (or `degraded` with actionable `llm.errors`), and
+`POST /estimate` with `{"story": {"title": "Test", "user_story": "As a user..."}}`
+should stream `started` → nine `node` events → one `result`.
+
+## 10. Optional repository assets (not required for functionality)
+
+- **`banking_jira_stories.csv`** — sample batch-upload data: 60 banking user stories
+  (471 physical lines due to multiline quoted cells) with columns
+  `Title, User Story, Acceptance Criteria, Technical Breakdown, Existing Points`;
+  titles follow the pattern `DB-001: Biometric Login`, ACs in Given/When/Then form.
+  Useful for demoing the upload flow; regenerate with any similar sample set.
+- **`banking_jira_stories_role_model.md`** — an 878-line reference document
+  describing the role model behind those sample stories.
+- **`img.png`** — application screenshot used for documentation.
+
+## 11. Known quirks preserved for fidelity
+
+- `backend/ingest/excel.py` imports `BinaryIO` unused; `nodes.py` accepts an unused
+  `attempt` semantics in `_retry_delay` (always called with 0). Harmless.
+- `.claude/launch.json` references npm scripts from an earlier monorepo layout
+  (see §5.6 note); the real dev command is `npm run dev`.
+- `stream_batch` re-parses its own SSE byte frames by string prefix rather than
+  passing structured objects — intentional simplicity, keep as-is.
+- `existing_points` arrives as float; the headline delta `result.points -
+  story.existing_points` can therefore render a fractional delta.
+- Frontend fonts load from Google Fonts at runtime (network required for the exact
+  typography; the UI degrades to system sans-serif offline).
+
+*Generated 2026-07-15 from commit `e19fb28` ("storyetimator").*
